@@ -238,7 +238,7 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
     .article-meta { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--text-secondary); }
     .article-meta .avatar { background: var(--border); width: 36px; height: 36px; border-radius: 50%; object-fit: cover; }
     .article-meta .author-info { display: flex; flex-direction: column; }
-    .article-meta .author-name { font-weight: 600; color: var(--text); font-size: 15px; }
+    .article-meta .author-name { font-weight: 400; color: var(--text); font-size: 15px; }
     .article-meta .author-handle { color: var(--text-tertiary); font-size: 13px; }
     .article-meta .divider { color: #ddd; }
     .article-meta .date { color: var(--text-tertiary); font-size: 13px; }
@@ -253,7 +253,7 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
     .article-footer { margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
     .source-link { font-size: 14px; color: var(--accent); text-decoration: none; }
     .source-link:hover { text-decoration: underline; }
-    .back-link { display: inline-flex; color: var(--accent); align-items: center; gap: 6px; margin-bottom: 16px; color: #576b95; text-decoration: none; font-size: 14px; padding: 8px 0; }
+    .back-link { display: inline-flex; color: var(--accent); align-items: center; margin-bottom: 16px; color: #576b95; text-decoration: none; padding: 8px 0; }
     .back-link:hover { text-decoration: underline; }
     .article-header .stats-bar { display: flex; gap: 16px; font-size: 13px; color: var(--text-secondary); margin-top: 8px; }
     .stats-bar .stat { display: inline-flex; align-items: center; gap: 3px; } display: flex; align-items: center; gap: 4px; }
@@ -261,7 +261,7 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
     /* ---- GFM: Headings ---- */
     .article-content h1, .article-content h2, .article-content h3,
     .article-content h4, .article-content h5, .article-content h6 {
-      margin: 24px 0 16px; font-weight: 600; line-height: 1.3; color: #1a1a1a;
+      margin: 24px 0 16px; font-weight: 400; line-height: 1.3; color: #1a1a1a;
     }
     .article-content h1 { font-size: 1.75em; padding-bottom: 0.3em; border-bottom: 1px solid var(--border); }
     .article-content h2 { font-size: 1.5em; padding-bottom: 0.3em; border-bottom: 1px solid var(--border); }
@@ -305,7 +305,7 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
     .article-content th, .article-content td {
       border: 1px solid var(--border); padding: 8px 12px; text-align: left;
     }
-    .article-content th { background: var(--border); font-weight: 600; }
+    .article-content th { background: var(--border); font-weight: 400; }
     .article-content tr:nth-child(even) { background: var(--border); }
 
     /* ---- GFM: Horizontal rule ---- */
@@ -323,13 +323,12 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
 <body>
 <div class="container">
     <div class="top-bar">
-    <a href="/" class="back-link" style="margin-bottom:0">← 返回列表</a>
+    <a href="/" class="back-link" style="margin-bottom:0" title="返回列表"><svg width="20" height="16" viewBox="0 0 20 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8H2"/><path d="M8 2l-6 6 6 6"/></svg></a>
     <button class="theme-btn" onclick="toggleTheme()" title="切换主题">
       <svg id="theme-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
       <svg id="theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
     </button>
   </div>
-  <div class="container">
     <article class="article-card">
       ${headerImgHtml}
 
@@ -355,7 +354,6 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
         <a href="${escapeHtml(tweet.url)}" class="source-link" target="_blank" rel="noopener">查看原文 →</a>
       </div>
     </article>
-  </div>
 <script>
 (function(){
   var t=localStorage.getItem('theme');
@@ -500,7 +498,7 @@ function renderIndexHtml(
                 <div class="article-meta">
                   <img src="${escapeHtml(a.authorAvatar || 'https://unavatar.io/x/' + a.authorHandle)}" alt="" class="meta-avatar" loading="lazy" />
                   <span class="meta-author">${escapeHtml(a.author)}</span>
-                  <span class="meta-time">收藏 ${a.savedDate.substring(5)} · 发布 ${a.tweetDate.substring(5)}</span>
+                  <span class="meta-time">收藏于 ${a.savedDate.substring(5)} · 更新于 ${a.tweetDate.substring(5)}</span>
                 </div>
                 <div class="article-stats">
                   <span class="stat">${ICONS.comment}<span>${(a.replies||0)}</span></span>
@@ -607,7 +605,7 @@ function renderIndexHtml(
       transition: transform 0.2s ease, box-shadow 0.2s ease; position: relative;
     }
     .article-item:hover { transform: translateY(-2px) scale(1.005); box-shadow: 0 8px 24px var(--shadow-md); }
-    .article-item.pinned { border-left: 3px solid var(--accent); }
+    .article-item.pinned { }
     .item-row { display: flex; align-items: flex-start; padding: 16px; }
     .meta-avatar {
       width: 18px; height: 18px; border-radius: 50%; object-fit: cover;
@@ -627,7 +625,7 @@ function renderIndexHtml(
       background: var(--accent-bg); padding: 1px 8px; border-radius: 4px; flex-shrink: 0;
     }
     .article-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 13px; margin-bottom: 6px; }
-    .meta-author { color: var(--text); font-weight: 600; }
+    .meta-author { color: var(--text-tertiary); font-weight: 400; }
     .meta-time { white-space: nowrap; color: var(--text-tertiary); }
     .article-stats { display: flex; gap: 16px; font-size: 12px; color: var(--text-tertiary); margin-bottom: 6px; }
     .stat { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; color: var(--text-secondary); }
@@ -778,7 +776,7 @@ function renderIndexHtml(
         const id = a.fileName.replace('.html', '');
 	        const avatarUrl = a.authorAvatar || ('https://unavatar.io/x/' + (a.authorHandle || ''));
         var tagsHtml = (a.hashtags && a.hashtags.length > 0) ? '<div class="article-tags">' + a.hashtags.slice(0, 5).map(function(t) { return '<span class="tag">#' + t + '</span>'; }).join('') + '</div>' : '';
-        return '<li class="article-item' + (a.pinned ? ' pinned' : '') + '" id="item-' + id + '"><div class="item-row"><a href="articles/' + a.fileName + '" class="article-link" onclick="markRead(\\'' + id + '\\')"><div class="article-title-wrap">' + a.title + pinnedBadge + '</div><div class="article-meta"><img src="' + avatarUrl + '" alt="" class="meta-avatar" loading="lazy" /><span class="meta-author">' + a.author + '</span><span class="meta-time">收藏 ' + (a.savedDate || '').substring(5) + ' · 发布 ' + a.tweetDate.substring(5) + '</span></div><div class="article-stats"><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>' + (a.replies||0) + '</span><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>' + (a.retweets||0) + '</span><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>' + (a.likes||0) + '</span></div>' + tagsHtml + '</a><div class="item-actions">' + unreadDot + '<div class="more-wrap"><button class="more-btn" onclick="toggleMenu(event, \\'' + id + '\\')">⋯</button><div class="dropdown-menu" id="menu-' + id + '"><div class="dropdown-item" onclick="pinItem(\\'' + id + '\\', ' + (a.pinned ? 'false' : 'true') + ')">' + pinLabel + '</div><div class="dropdown-item" onclick="' + (a.unread ? 'markRead(\\'' + id + '\\')' : 'markUnread(\\'' + id + '\\')') + '">' + (a.unread ? '标为已读' : '标为未读') + '</div>' + (a.tweetUrl ? '<div class="dropdown-item" onclick="window.open(\\'' + a.tweetUrl + '\\', \\'_blank\\')">查看原文</div>' : '') + '<div class="dropdown-item delete" onclick="deleteItem(\\'' + id + '\\')">删除</div></div></div></div></div></li>';
+        return '<li class="article-item' + (a.pinned ? ' pinned' : '') + '" id="item-' + id + '"><div class="item-row"><a href="articles/' + a.fileName + '" class="article-link" onclick="markRead(\\'' + id + '\\')"><div class="article-title-wrap">' + a.title + pinnedBadge + '</div><div class="article-meta"><img src="' + avatarUrl + '" alt="" class="meta-avatar" loading="lazy" /><span class="meta-author">' + a.author + '</span><span class="meta-time">收藏于 ' + (a.savedDate || '').substring(5) + ' · 更新于 ' + a.tweetDate.substring(5) + '</span></div><div class="article-stats"><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>' + (a.replies||0) + '</span><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>' + (a.retweets||0) + '</span><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>' + (a.likes||0) + '</span></div>' + tagsHtml + '</a><div class="item-actions">' + unreadDot + '<div class="more-wrap"><button class="more-btn" onclick="toggleMenu(event, \\'' + id + '\\')">⋯</button><div class="dropdown-menu" id="menu-' + id + '"><div class="dropdown-item" onclick="pinItem(\\'' + id + '\\', ' + (a.pinned ? 'false' : 'true') + ')">' + pinLabel + '</div><div class="dropdown-item" onclick="' + (a.unread ? 'markRead(\\'' + id + '\\')' : 'markUnread(\\'' + id + '\\')') + '">' + (a.unread ? '标为已读' : '标为未读') + '</div>' + (a.tweetUrl ? '<div class="dropdown-item" onclick="window.open(\\'' + a.tweetUrl + '\\', \\'_blank\\')">查看原文</div>' : '') + '<div class="dropdown-item delete" onclick="deleteItem(\\'' + id + '\\')">删除</div></div></div></div></div></li>';
       }).join('');
     }
 
