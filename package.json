@@ -1,0 +1,26 @@
+{
+  "name": "tweet-archive",
+  "version": "1.0.0",
+  "description": "Auto-archive tweets to self-hosted HTML pages",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "postbuild": "cp node_modules/highlight.js/styles/github.css public/highlight.css",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "setup": "npm run build"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "express": "^4.18.2",
+    "highlight.js": "^11.11.1",
+    "https-proxy-agent": "^9.0.0",
+    "marked": "^18.0.4"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.10.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.0"
+  }
+}

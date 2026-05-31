@@ -1,0 +1,44 @@
+services:
+  nginx:
+    image: nginx:alpine
+    container_name: tweet-nginx
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./upstream.conf:/etc/nginx/upstream.conf:ro
+    restart: unless-stopped
+
+  app-blue:
+    build: .
+    container_name: app-blue
+    profiles:
+      - blue
+      - full
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - PORT=3000
+      - USE_PROXY=1
+      - HTTPS_PROXY=http://host.docker.internal:7890
+      - HTTP_PROXY=http://host.docker.internal:7890
+
+  app-green:
+    build: .
+    container_name: app-green
+    profiles:
+      - green
+      - full
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - PORT=3000
+      - USE_PROXY=1
+      - HTTPS_PROXY=http://host.docker.internal:7890
+      - HTTP_PROXY=http://host.docker.internal:7890

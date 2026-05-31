@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1d9bf0"/>
+      <stop offset="100%" stop-color="#576b95"/>
+    </linearGradient>
+  </defs>
+  <!-- bookmark body -->
+  <path d="M22 12C22 8.686 24.686 6 28 6H72C75.314 6 78 8.686 78 12V92L52.5 72L50 70.2L47.5 72L22 92V12Z"
+        fill="url(#bg)" stroke="none"/>
+  <!-- inner page lines -->
+  <rect x="36" y="28" width="28" height="4" rx="2" fill="#fff" opacity="0.7"/>
+  <rect x="36" y="38" width="22" height="4" rx="2" fill="#fff" opacity="0.5"/>
+  <rect x="36" y="48" width="25" height="4" rx="2" fill="#fff" opacity="0.5"/>
+  <!-- checkmark -->
+  <polyline points="64,58 68,64 78,52" fill="none" stroke="#fff" stroke-width="3.5"
+            stroke-linecap="round" stroke-linejoin="round" opacity="0.8"/>
+</svg>
