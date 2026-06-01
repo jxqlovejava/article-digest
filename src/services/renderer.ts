@@ -226,12 +226,12 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
     }
     .container { max-width: 740px; margin: 0 auto; padding: 20px 16px 40px; }
     .top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-    .theme-btn {
+    .theme-btn, .refresh-btn {
       width: 32px; height: 32px; border: none; border-radius: 50%;
       background: transparent; color: var(--text-secondary); cursor: pointer;
       display: flex; align-items: center; justify-content: center; transition: all 0.2s;
     }
-    .theme-btn:hover { color: var(--text); }
+    .theme-btn:hover, .refresh-btn:hover { color: var(--text); }
     .article-card { background: var(--surface); border-radius: 8px; padding: 32px 24px; box-shadow: 0 1px 3px var(--shadow-sm); }
     .article-header { margin-bottom: 24px; padding-bottom: 20px; border-bottom: 1px solid var(--border); }
     .article-title { font-size: 24px; font-weight: 700; line-height: 1.4; color: var(--text); margin-bottom: 16px; word-break: break-word; }
@@ -489,35 +489,43 @@ function renderIndexHtml(
       const id = a.fileName.replace(/\.html$/, '');
       return `
           <li class="article-item${a.pinned ? ' pinned' : ''}" id="item-${escapeHtml(id)}">
-            <div class="item-row">
-              <a href="articles/${a.fileName}" class="article-link" onclick="markRead('${escapeHtml(id)}')">
-                <div class="article-title-wrap">
-                  ${escapeHtml(displayTitle)}
-                  ${pinnedBadge}
-                </div>
-                <div class="article-meta">
-                  <img src="${escapeHtml(a.authorAvatar || 'https://unavatar.io/x/' + a.authorHandle)}" alt="" class="meta-avatar" loading="lazy" />
-                  <span class="meta-author">${escapeHtml(a.author)}</span>
-                  <span class="meta-time">收藏于 ${a.savedDate.substring(5)} · 更新于 ${a.tweetDate.substring(5)}</span>
-                </div>
-                <div class="article-stats">
-                  <span class="stat">${ICONS.comment}<span>${(a.replies||0)}</span></span>
-                  <span class="stat">${ICONS.repost}<span>${(a.retweets||0)}</span></span>
-                  <span class="stat">${ICONS.like}<span>${(a.likes||0)}</span></span>
-                </div>
-                ${tagsHtml}
-              </a>
-              <div class="item-actions">
-                ${unreadDot}
-                <div class="more-wrap">
-                  <button class="more-btn" onclick="toggleMenu(event, '${escapeHtml(id)}')" title="更多操作">⋯</button>
-                  <div class="dropdown-menu" id="menu-${escapeHtml(id)}">
-                    <div class="dropdown-item" onclick="pinItem('${escapeHtml(id)}', ${a.pinned ? 'false' : 'true'})">${a.pinned ? '取消置顶' : '置顶'}</div>
-                    <div class="dropdown-item" onclick="${a.unread ? `markRead('${escapeHtml(id)}')` : `markUnread('${escapeHtml(id)}')`}">${a.unread ? '标为已读' : '标为未读'}</div>
-                    ${a.tweetUrl ? `<div class="dropdown-item" onclick="window.open('${escapeHtml(a.tweetUrl)}', '_blank')">查看原文</div>` : ''}
-                    <div class="dropdown-item delete" onclick="deleteItem('${escapeHtml(id)}')">删除</div>
+            <div class="swipe-wrap">
+              <div class="item-row swipe-content">
+                <a href="articles/${a.fileName}" class="article-link" onclick="markRead('${escapeHtml(id)}')">
+                  <div class="article-title-wrap">
+                    ${escapeHtml(displayTitle)}
+                    ${pinnedBadge}
+                  </div>
+                  <div class="article-meta">
+                    <img src="${escapeHtml(a.authorAvatar || 'https://unavatar.io/x/' + a.authorHandle)}" alt="" class="meta-avatar" loading="lazy" />
+                    <span class="meta-author">${escapeHtml(a.author)}</span>
+                    <span class="meta-time">收藏于 ${a.savedDate.substring(5)} · 更新于 ${a.tweetDate.substring(5)}</span>
+                  </div>
+                  <div class="article-stats">
+                    <span class="stat">${ICONS.comment}<span>${(a.replies||0)}</span></span>
+                    <span class="stat">${ICONS.repost}<span>${(a.retweets||0)}</span></span>
+                    <span class="stat">${ICONS.like}<span>${(a.likes||0)}</span></span>
+                  </div>
+                  ${tagsHtml}
+                </a>
+                <div class="item-actions">
+                  ${unreadDot}
+                  <div class="more-wrap">
+                    <button class="more-btn" onclick="toggleMenu(event, '${escapeHtml(id)}')" title="更多操作">⋯</button>
+                    <div class="dropdown-menu" id="menu-${escapeHtml(id)}">
+                      <div class="dropdown-item" onclick="pinItem('${escapeHtml(id)}', ${a.pinned ? 'false' : 'true'})">${a.pinned ? '取消置顶' : '置顶'}</div>
+                      <div class="dropdown-item" onclick="${a.unread ? `markRead('${escapeHtml(id)}')` : `markUnread('${escapeHtml(id)}')`}">${a.unread ? '标为已读' : '标为未读'}</div>
+                      ${a.tweetUrl ? `<div class="dropdown-item" onclick="window.open('${escapeHtml(a.tweetUrl)}', '_blank')">查看原文</div>` : ''}
+                      <div class="dropdown-item delete" onclick="deleteItem('${escapeHtml(id)}')">删除</div>
+                    </div>
                   </div>
                 </div>
+              </div>
+              <div class="swipe-actions">
+                <button class="swipe-btn pin" onclick="pinItem('${escapeHtml(id)}', ${a.pinned ? 'false' : 'true'})">${a.pinned ? '取消置顶' : '置顶'}</button>
+                <button class="swipe-btn read" onclick="${a.unread ? `markRead('${escapeHtml(id)}')` : `markUnread('${escapeHtml(id)}')`}">${a.unread ? '标为已读' : '标为未读'}</button>
+                ${a.tweetUrl ? `<button class="swipe-btn source" onclick="window.open('${escapeHtml(a.tweetUrl)}', '_blank')">原文</button>` : ''}
+                <button class="swipe-btn delete" onclick="deleteItem('${escapeHtml(id)}')">删除</button>
               </div>
             </div>
           </li>`;
@@ -585,12 +593,12 @@ function renderIndexHtml(
     .header h1 { font-size: 22px; font-weight: 700; color: var(--text); }
     .header .subtitle { color: var(--text-secondary); font-size: 14px; margin-top: 4px; }
     .sort-buttons { display: flex; gap: 8px; align-items: center; }
-    .theme-btn {
+    .theme-btn, .refresh-btn {
       width: 32px; height: 32px; border: none; border-radius: 50%;
       background: transparent; color: var(--text-secondary); cursor: pointer;
       display: flex; align-items: center; justify-content: center; transition: all 0.2s;
     }
-    .theme-btn:hover { color: var(--text); }
+    .theme-btn:hover, .refresh-btn:hover { color: var(--text); }
     .sort-btn {
       padding: 6px 14px; border: 1px solid var(--border); border-radius: 16px;
       background: var(--surface); color: var(--text-secondary); font-size: 13px;
@@ -671,10 +679,36 @@ function renderIndexHtml(
       text-align: center; color: var(--text-secondary); font-size: 15px;
       box-shadow: 0 1px 3px var(--shadow-sm);
     }
+    /* ---- Swipe actions (mobile) ---- */
+    .swipe-wrap { position: relative; overflow: hidden; }
+    .swipe-content { transition: transform 0.25s ease; width: 100%; }
+    .swipe-actions {
+      display: none;
+      position: absolute;
+      right: 0; top: 0; bottom: 0;
+      align-items: stretch;
+      z-index: 2;
+    }
+    .swipe-btn {
+      border: none; padding: 0 14px; font-size: 13px; color: #fff;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      white-space: nowrap;
+    }
+    .swipe-btn.pin { background: #576b95; }
+    .swipe-btn.read { background: #7d93ad; }
+    .swipe-btn.source { background: #888; }
+    .swipe-btn.delete { background: #fa5151; }
+    .refresh-btn { display: none; }
     @media (max-width: 480px) {
       .header { padding: 20px 16px; }
       .article-link { padding: 16px 0 16px 16px; }
       .item-actions { padding: 16px 12px 16px 4px; }
+      .more-btn { display: none; }
+      .refresh-btn { display: flex; }
+      .article-item { overflow: hidden; }
+    }
+    @media (min-width: 481px) {
+      .swipe-actions { display: none !important; }
     }
   </style>
 </head>
@@ -694,6 +728,9 @@ function renderIndexHtml(
         <button class="theme-btn" onclick="toggleTheme()" title="切换主题">
           <svg id="theme-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
           <svg id="theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
+        </button>
+        <button class="refresh-btn" onclick="location.reload()" title="刷新">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
         </button>
       </div>
     </div>
@@ -774,9 +811,10 @@ function renderIndexHtml(
         const unreadDot = a.unread ? '<span class="unread-dot"></span>' : '';
         const pinLabel = a.pinned ? '取消置顶' : '置顶';
         const id = a.fileName.replace('.html', '');
-	        const avatarUrl = a.authorAvatar || ('https://unavatar.io/x/' + (a.authorHandle || ''));
+        const avatarUrl = a.authorAvatar || ('https://unavatar.io/x/' + (a.authorHandle || ''));
         var tagsHtml = (a.hashtags && a.hashtags.length > 0) ? '<div class="article-tags">' + a.hashtags.slice(0, 5).map(function(t) { return '<span class="tag">#' + t + '</span>'; }).join('') + '</div>' : '';
-        return '<li class="article-item' + (a.pinned ? ' pinned' : '') + '" id="item-' + id + '"><div class="item-row"><a href="articles/' + a.fileName + '" class="article-link" onclick="markRead(\\'' + id + '\\')"><div class="article-title-wrap">' + a.title + pinnedBadge + '</div><div class="article-meta"><img src="' + avatarUrl + '" alt="" class="meta-avatar" loading="lazy" /><span class="meta-author">' + a.author + '</span><span class="meta-time">收藏于 ' + (a.savedDate || '').substring(5) + ' · 更新于 ' + a.tweetDate.substring(5) + '</span></div><div class="article-stats"><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>' + (a.replies||0) + '</span><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>' + (a.retweets||0) + '</span><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>' + (a.likes||0) + '</span></div>' + tagsHtml + '</a><div class="item-actions">' + unreadDot + '<div class="more-wrap"><button class="more-btn" onclick="toggleMenu(event, \\'' + id + '\\')">⋯</button><div class="dropdown-menu" id="menu-' + id + '"><div class="dropdown-item" onclick="pinItem(\\'' + id + '\\', ' + (a.pinned ? 'false' : 'true') + ')">' + pinLabel + '</div><div class="dropdown-item" onclick="' + (a.unread ? 'markRead(\\'' + id + '\\')' : 'markUnread(\\'' + id + '\\')') + '">' + (a.unread ? '标为已读' : '标为未读') + '</div>' + (a.tweetUrl ? '<div class="dropdown-item" onclick="window.open(\\'' + a.tweetUrl + '\\', \\'_blank\\')">查看原文</div>' : '') + '<div class="dropdown-item delete" onclick="deleteItem(\\'' + id + '\\')">删除</div></div></div></div></div></li>';
+        var swipeActions = '<div class="swipe-actions"><button class="swipe-btn pin" onclick="pinItem(\\'' + id + '\\', ' + (a.pinned ? 'false' : 'true') + ')">' + pinLabel + '</button><button class="swipe-btn read" onclick="' + (a.unread ? 'markRead(\\'' + id + '\\')' : 'markUnread(\\'' + id + '\\')') + '">' + (a.unread ? '标为已读' : '标为未读') + '</button>' + (a.tweetUrl ? '<button class="swipe-btn source" onclick="window.open(\\'' + a.tweetUrl + '\\', \\'_blank\\')">原文</button>' : '') + '<button class="swipe-btn delete" onclick="deleteItem(\\'' + id + '\\')">删除</button></div>';
+        return '<li class="article-item' + (a.pinned ? ' pinned' : '') + '" id="item-' + id + '"><div class="swipe-wrap"><div class="item-row swipe-content"><a href="articles/' + a.fileName + '" class="article-link" onclick="markRead(\\'' + id + '\\')"><div class="article-title-wrap">' + a.title + pinnedBadge + '</div><div class="article-meta"><img src="' + avatarUrl + '" alt="" class="meta-avatar" loading="lazy" /><span class="meta-author">' + a.author + '</span><span class="meta-time">收藏于 ' + (a.savedDate || '').substring(5) + ' · 更新于 ' + a.tweetDate.substring(5) + '</span></div><div class="article-stats"><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>' + (a.replies||0) + '</span><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>' + (a.retweets||0) + '</span><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>' + (a.likes||0) + '</span></div>' + tagsHtml + '</a><div class="item-actions">' + unreadDot + '<div class="more-wrap"><button class="more-btn" onclick="toggleMenu(event, \\'' + id + '\\')">⋯</button><div class="dropdown-menu" id="menu-' + id + '"><div class="dropdown-item" onclick="pinItem(\\'' + id + '\\', ' + (a.pinned ? 'false' : 'true') + ')">' + pinLabel + '</div><div class="dropdown-item" onclick="' + (a.unread ? 'markRead(\\'' + id + '\\')' : 'markUnread(\\'' + id + '\\')') + '">' + (a.unread ? '标为已读' : '标为未读') + '</div>' + (a.tweetUrl ? '<div class="dropdown-item" onclick="window.open(\\'' + a.tweetUrl + '\\', \\'_blank\\')">查看原文</div>' : '') + '<div class="dropdown-item delete" onclick="deleteItem(\\'' + id + '\\')">删除</div></div></div></div></div>' + swipeActions + '</div></li>';
       }).join('');
     }
 
@@ -841,6 +879,216 @@ function renderIndexHtml(
         renderList();
       }
     }
+
+    // ---- Mobile swipe handling ----
+    (function initSwipe() {
+      var SWIPE_THRESHOLD = 50;
+      var ELASTIC_LIMIT = SWIPE_THRESHOLD * 1.2;
+      var DAMPING = 0.6;
+      var SPEED_THRESHOLD = 0.5;
+      var VERTICAL_RATIO = 1.2;
+      var TRANSITION_STYLE = 'transform 0.3s cubic-bezier(0.25, 0.1, 0.25, 1)';
+
+      var startX = 0;
+      var startY = 0;
+      var startTime = 0;
+      var currentX = 0;
+      var currentY = 0;
+      var activeSwipeContent = null;
+      var activeSwipeActions = null;
+      var isSwiping = false;
+      var isScrolling = false;
+      var isExpanded = false;
+
+      function getTranslateX(el) {
+        var style = el.style.transform;
+        if (!style) return 0;
+        var match = style.match(/translateX\(([-\d.]+)px\)/);
+        return match ? parseFloat(match[1]) : 0;
+      }
+
+      function setTranslateX(el, offset, withTransition) {
+        if (withTransition) {
+          el.style.transition = TRANSITION_STYLE;
+        } else {
+          el.style.transition = 'none';
+        }
+        el.style.transform = 'translateX(' + offset + 'px)';
+      }
+
+      function closeAllSwipes() {
+        var wraps = document.querySelectorAll('.swipe-wrap');
+        for (var i = 0; i < wraps.length; i++) {
+          var content = wraps[i].querySelector('.swipe-content');
+          var actions = wraps[i].querySelector('.swipe-actions');
+          if (content) {
+            content.style.transition = TRANSITION_STYLE;
+            content.style.transform = '';
+          }
+          if (actions) actions.style.display = 'none';
+        }
+        activeSwipeContent = null;
+        activeSwipeActions = null;
+        isExpanded = false;
+      }
+
+      document.addEventListener('click', function(e) {
+        if (!e.target.closest('.swipe-actions')) {
+          closeAllSwipes();
+        }
+      });
+
+      document.addEventListener('touchstart', function(e) {
+        var wrap = e.target.closest('.swipe-wrap');
+        if (!wrap) {
+          closeAllSwipes();
+          return;
+        }
+        var content = wrap.querySelector('.swipe-content');
+        if (!content) return;
+
+        // Multi-touch guard
+        if (e.touches.length > 1) {
+          isSwiping = false;
+          return;
+        }
+
+        startX = e.touches[0].clientX;
+        startY = e.touches[0].clientY;
+        startTime = Date.now();
+        currentX = startX;
+        currentY = startY;
+        isSwiping = true;
+        isScrolling = false;
+        isExpanded = getTranslateX(content) <= -SWIPE_THRESHOLD / 2;
+
+        // Close other open swipes with animation
+        if (activeSwipeContent && activeSwipeContent !== content) {
+          var otherWrap = activeSwipeContent.closest('.swipe-wrap');
+          var otherActions = otherWrap ? otherWrap.querySelector('.swipe-actions') : null;
+          activeSwipeContent.style.transition = TRANSITION_STYLE;
+          activeSwipeContent.style.transform = '';
+          if (otherActions) otherActions.style.display = 'none';
+        }
+
+        activeSwipeContent = content;
+        activeSwipeActions = wrap.querySelector('.swipe-actions');
+      }, { passive: true });
+
+      document.addEventListener('touchmove', function(e) {
+        if (!isSwiping || !activeSwipeContent) return;
+
+        // Multi-touch guard
+        if (e.touches.length > 1) {
+          isSwiping = false;
+          return;
+        }
+
+        currentX = e.touches[0].clientX;
+        currentY = e.touches[0].clientY;
+        var deltaX = currentX - startX;
+        var deltaY = currentY - startY;
+
+        // Vertical scroll conflict resolution
+        if (!isScrolling && Math.abs(deltaY) > Math.abs(deltaX) * VERTICAL_RATIO) {
+          isScrolling = true;
+          isSwiping = false;
+          return;
+        }
+        if (isScrolling) return;
+
+        // Horizontal swipe — prevent page scroll
+        e.preventDefault();
+
+        var offset;
+        var currentOffset = getTranslateX(activeSwipeContent);
+        var wasExpanded = currentOffset <= -SWIPE_THRESHOLD / 2;
+
+        if (deltaX < 0) {
+          // Left swipe (open)
+          if (wasExpanded) {
+            offset = -SWIPE_THRESHOLD + deltaX * DAMPING;
+          } else {
+            offset = deltaX * DAMPING;
+          }
+        } else if (deltaX > 0 && wasExpanded) {
+          // Right swipe to close (from expanded state)
+          offset = -SWIPE_THRESHOLD + deltaX * DAMPING;
+        } else {
+          // Right swipe on closed item — ignore
+          return;
+        }
+
+        // Elastic boundary
+        if (offset < -ELASTIC_LIMIT) {
+          var over = offset + ELASTIC_LIMIT;
+          offset = -ELASTIC_LIMIT + over * 0.3;
+        }
+        if (offset > 0) offset = 0;
+
+        setTranslateX(activeSwipeContent, offset, false);
+
+        // Show actions when swiping left past threshold
+        if (activeSwipeActions && offset < -SWIPE_THRESHOLD / 2) {
+          activeSwipeActions.style.display = 'flex';
+        }
+      }, { passive: false });
+
+      document.addEventListener('touchend', function(e) {
+        if (!isSwiping || !activeSwipeContent) return;
+        isSwiping = false;
+
+        var deltaX = currentX - startX;
+        var elapsed = Date.now() - startTime;
+        var speed = elapsed > 0 ? Math.abs(deltaX) / elapsed : 0;
+        var currentOffset = getTranslateX(activeSwipeContent);
+        var wrap = activeSwipeContent.closest('.swipe-wrap');
+        var actions = wrap ? wrap.querySelector('.swipe-actions') : null;
+
+        var shouldExpand = false;
+
+        if (speed > SPEED_THRESHOLD) {
+          // Velocity-based snap
+          if (deltaX < 0) {
+            shouldExpand = true;
+          } else if (deltaX > 0 && isExpanded) {
+            shouldExpand = false;
+          } else {
+            shouldExpand = currentOffset <= -SWIPE_THRESHOLD / 2;
+          }
+        } else {
+          // Distance-based snap
+          shouldExpand = currentOffset <= -SWIPE_THRESHOLD / 2;
+        }
+
+        if (shouldExpand) {
+          setTranslateX(activeSwipeContent, -SWIPE_THRESHOLD, true);
+          if (actions) actions.style.display = 'flex';
+          isExpanded = true;
+        } else {
+          setTranslateX(activeSwipeContent, 0, true);
+          if (actions) actions.style.display = 'none';
+          activeSwipeContent = null;
+          activeSwipeActions = null;
+          isExpanded = false;
+        }
+      }, { passive: true });
+
+      document.addEventListener('touchcancel', function() {
+        if (activeSwipeContent) {
+          var wrap = activeSwipeContent.closest('.swipe-wrap');
+          var actions = wrap ? wrap.querySelector('.swipe-actions') : null;
+          activeSwipeContent.style.transition = TRANSITION_STYLE;
+          activeSwipeContent.style.transform = '';
+          if (actions) actions.style.display = 'none';
+          activeSwipeContent = null;
+          activeSwipeActions = null;
+        }
+        isSwiping = false;
+        isScrolling = false;
+        isExpanded = false;
+      }, { passive: true });
+    })();
   </script>
 <script>
 (function(){
