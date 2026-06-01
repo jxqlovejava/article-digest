@@ -15,6 +15,27 @@ function getAgent() {
   }
 }
 
+/** Derive a title from tweet text. Merges continuation lines (ending in ，、；：) up to maxLen. */
+export function deriveTitle(text: string, maxLen = 80): string {
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  if (lines.length === 0) return '';
+
+  let title = lines[0];
+  const continuationMarks = /[，、；：]$/;
+  let i = 1;
+  while (i < lines.length && continuationMarks.test(title) && title.length < maxLen) {
+    const combined = title + lines[i];
+    if (combined.length <= maxLen) {
+      title = combined;
+    } else {
+      title = combined.substring(0, maxLen);
+      break;
+    }
+    i++;
+  }
+  return title.substring(0, maxLen);
+}
+
 export interface TweetAuthor {
   name: string;
   screen_name: string;
@@ -465,8 +486,11 @@ async function fetchFromFxTwitter(parsed: ParsedTweetUrl): Promise<FetchedTweet>
     articleVideos = articleData.videos;
   }
 
+  if (!title && tweet.title) {
+    title = tweet.title;
+  }
   if (!title) {
-    title = text.split('\n')[0].substring(0, 80) || `${tweet.author.name} 的推文`;
+    title = deriveTitle(text, 80) || `${tweet.author.name} 的推文`;
   }
 
   // Merge article photos/videos with tweet media
@@ -537,7 +561,7 @@ async function fetchFromOembed(parsed: ParsedTweetUrl): Promise<FetchedTweet> {
   const html = response.data.html || '';
   const textMatch = html.match(/<p[^>]*>([\s\S]*?)<\/p>/);
   const text = textMatch ? textMatch[1].replace(/<[^>]+>/g, '').trim() : html.replace(/<[^>]+>/g, '').trim();
-  const title = text.split('\n')[0].substring(0, 80) || `${response.data.author_name || parsed.username} 的推文`;
+  const title = deriveTitle(text, 80) || `${response.data.author_name || parsed.username} 的推文`;
 
   return {
     id: parsed.tweetId,

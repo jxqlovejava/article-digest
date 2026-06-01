@@ -5,6 +5,7 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 import { marked, Renderer } from 'marked';
 import hljs from 'highlight.js';
 import type { FetchedTweet, TweetPhoto } from './fetcher';
+import { deriveTitle } from './fetcher';
 
 // ---- Marked setup ----
 const markedRenderer = new Renderer();
@@ -112,14 +113,19 @@ function convertMarkdownToHtml(text: string): string {
 
 function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImageUrls: string[], allVideoUrls: string[], localVideoPaths: string[]): string {
   const dateStr = formatDate(tweet.created_timestamp);
-  const title = tweet.title || tweet.text.split('\n')[0].substring(0, 80);
+  const title = tweet.title || deriveTitle(tweet.text, 80);
 
   // X-style SVG icons (defined locally, used in stats-bar below)
+
+  // Track which media indices were referenced by markers in the original text
+  const referencedImgIndices = new Set<number>();
+  const referencedVideoIndices = new Set<number>();
 
   // Step 1: replace [IMG:N] and [VIDEO:N] with safe markers
   const imgMap: string[] = [];
   let text = tweet.text.replace(/\[IMG:(\d+)\]/g, (_, idx) => {
     const i = parseInt(idx, 10);
+    referencedImgIndices.add(i);
     const src = localImagePaths[i] || allImageUrls[i] || '';
     if (src) {
       imgMap.push(src);
@@ -131,6 +137,7 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
   // Replace [VIDEO:N] markers with video HTML
   text = text.replace(/\[VIDEO:(\d+)\]/g, (_, idx) => {
     const i = parseInt(idx, 10);
+    referencedVideoIndices.add(i);
     const src = localVideoPaths[i] || allVideoUrls[i] || '';
     if (src) {
       return `<video src="${src}" controls preload="metadata" class="tweet-inline-video"></video>`;
@@ -192,6 +199,28 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
     const src = imgMap[parseInt(idx, 10)];
     return src ? `<img src="${src}" alt="推文图片" loading="lazy" class="tweet-inline-img" />` : '';
   });
+
+  // Step 4: append unreferenced media (regular tweets without [IMG:N]/[VIDEO:N] markers)
+  const unreferencedMedia: string[] = [];
+  for (let i = 0; i < allImageUrls.length; i++) {
+    if (!referencedImgIndices.has(i)) {
+      const src = localImagePaths[i] || allImageUrls[i];
+      if (src) {
+        unreferencedMedia.push(`<img src="${src}" alt="推文图片" loading="lazy" class="tweet-inline-img" />`);
+      }
+    }
+  }
+  for (let i = 0; i < allVideoUrls.length; i++) {
+    if (!referencedVideoIndices.has(i)) {
+      const src = localVideoPaths[i] || allVideoUrls[i];
+      if (src) {
+        unreferencedMedia.push(`<video src="${src}" controls preload="metadata" class="tweet-inline-video"></video>`);
+      }
+    }
+  }
+  if (unreferencedMedia.length > 0) {
+    contentHtml += '\n' + unreferencedMedia.join('\n');
+  }
 
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -405,13 +434,13 @@ interface ArticleMeta {
 
 const META_FILE = path.join(DATA_DIR, 'meta.json');
 
-function loadMeta(): ArticleMeta[] {
+export function loadMeta(): ArticleMeta[] {
   if (!fs.existsSync(META_FILE)) return [];
   try { return JSON.parse(fs.readFileSync(META_FILE, 'utf-8')); }
   catch { return []; }
 }
 
-function saveMeta(meta: ArticleMeta[]) {
+export function saveMeta(meta: ArticleMeta[]) {
   fs.writeFileSync(META_FILE, JSON.stringify(meta, null, 2), 'utf-8');
 }
 
@@ -491,7 +520,7 @@ function renderIndexHtml(
           <li class="article-item${a.pinned ? ' pinned' : ''}" id="item-${escapeHtml(id)}">
             <div class="swipe-wrap">
               <div class="item-row swipe-content">
-                <a href="articles/${a.fileName}" class="article-link" onclick="markRead('${escapeHtml(id)}')">
+                <a href="articles/${a.fileName}" class="article-link" onclick="markReadNoRender('${escapeHtml(id)}')">
                   <div class="article-title-wrap">
                     ${escapeHtml(displayTitle)}
                     ${pinnedBadge}
@@ -522,10 +551,10 @@ function renderIndexHtml(
                 </div>
               </div>
               <div class="swipe-actions">
-                <button class="swipe-btn pin" onclick="pinItem('${escapeHtml(id)}', ${a.pinned ? 'false' : 'true'})">${a.pinned ? '取消置顶' : '置顶'}</button>
-                <button class="swipe-btn read" onclick="${a.unread ? `markRead('${escapeHtml(id)}')` : `markUnread('${escapeHtml(id)}')`}">${a.unread ? '标为已读' : '标为未读'}</button>
-                ${a.tweetUrl ? `<button class="swipe-btn source" onclick="window.open('${escapeHtml(a.tweetUrl)}', '_blank')">原文</button>` : ''}
-                <button class="swipe-btn delete" onclick="deleteItem('${escapeHtml(id)}')">删除</button>
+                <button class="swipe-btn pin" onclick="event.stopPropagation(); pinItem('${escapeHtml(id)}', ${a.pinned ? 'false' : 'true'})">${a.pinned ? '取消置顶' : '置顶'}</button>
+                <button class="swipe-btn read" onclick="event.stopPropagation(); ${a.unread ? `markRead('${escapeHtml(id)}')` : `markUnread('${escapeHtml(id)}')`}">${a.unread ? '标为已读' : '标为未读'}</button>
+                ${a.tweetUrl ? `<button class="swipe-btn source" onclick="event.stopPropagation(); window.open('${escapeHtml(a.tweetUrl)}', '_blank')">原文</button>` : ''}
+                <button class="swipe-btn delete" onclick="event.stopPropagation(); deleteItem('${escapeHtml(id)}')">删除</button>
               </div>
             </div>
           </li>`;
@@ -602,7 +631,7 @@ function renderIndexHtml(
     .sort-btn {
       padding: 6px 14px; border: 1px solid var(--border); border-radius: 16px;
       background: var(--surface); color: var(--text-secondary); font-size: 13px;
-      cursor: pointer; transition: all 0.2s;
+      cursor: pointer; transition: all 0.2s; outline: none;
     }
     .sort-btn:hover { border-color: var(--accent); color: var(--accent); }
     .sort-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
@@ -613,6 +642,7 @@ function renderIndexHtml(
       transition: transform 0.2s ease, box-shadow 0.2s ease; position: relative;
     }
     .article-item:hover { transform: translateY(-2px) scale(1.005); box-shadow: 0 8px 24px var(--shadow-md); }
+    .article-item:active { background: rgba(128,128,128,0.25); transition: background 0.05s; }
     .article-item.pinned { }
     .item-row { display: flex; align-items: flex-start; padding: 16px; }
     .meta-avatar {
@@ -622,7 +652,11 @@ function renderIndexHtml(
     .article-link {
       flex: 1; display: block; padding: 0;
       text-decoration: none; color: inherit; min-width: 0;
+      -webkit-tap-highlight-color: transparent;
+      outline: none;
     }
+    .article-link:focus { outline: none; }
+    .article-link:active { background: transparent; }
     .article-title-wrap {
       font-size: 17px; font-weight: 700; color: var(--text);
       margin-bottom: 6px; line-height: 1.5;
@@ -680,14 +714,16 @@ function renderIndexHtml(
       box-shadow: 0 1px 3px var(--shadow-sm);
     }
     /* ---- Swipe actions (mobile) ---- */
-    .swipe-wrap { position: relative; overflow: hidden; }
-    .swipe-content { transition: transform 0.25s ease; width: 100%; }
+    .swipe-wrap { position: relative; overflow: hidden; touch-action: pan-y; -webkit-touch-callout: none; }
+    .swipe-content { position: relative; z-index: 2; background: var(--surface); transition: transform 0.25s ease; width: 100%; }
     .swipe-actions {
       display: none;
       position: absolute;
       right: 0; top: 0; bottom: 0;
       align-items: stretch;
-      z-index: 2;
+      z-index: 3;
+      transform: translateX(100%);
+      transition: transform 0.25s ease;
     }
     .swipe-btn {
       border: none; padding: 0 14px; font-size: 13px; color: #fff;
@@ -718,19 +754,19 @@ function renderIndexHtml(
       <div>
         <h1>推文收藏</h1>
         <p class="subtitle" id="count">共 ${articlesBySaved.length} 条</p>
-</div>
+      </div>
       <div style="display:flex; align-items:center; gap:12px;">
         <div class="sort-buttons">
           <button class="sort-btn active" onclick="sortBy('saved')" id="btn-saved">按收藏时间</button>
-          <button class="sort-btn" onclick="sortBy('tweet')" id="btn-tweet">按发布时间</button>
+          <button class="sort-btn" onclick="sortBy('tweet')" id="btn-tweet">按更新时间</button>
           <button class="sort-btn" onclick="sortBy('unread')" id="btn-unread">按未读</button>
         </div>
+        <button class="refresh-btn" onclick="location.reload()" title="刷新">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        </button>
         <button class="theme-btn" onclick="toggleTheme()" title="切换主题">
           <svg id="theme-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
           <svg id="theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
-        </button>
-        <button class="refresh-btn" onclick="location.reload()" title="刷新">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
         </button>
       </div>
     </div>
@@ -753,6 +789,10 @@ function renderIndexHtml(
 
     document.addEventListener('click', closeMenu);
     window.addEventListener('scroll', closeMenu, true);
+    // Re-render on bfcache restore so Read/Unread dots reflect current data
+    window.addEventListener('pageshow', function(e) {
+      if (e.persisted) renderList();
+    });
 
     function toggleMenu(e, id) {
       e.preventDefault(); e.stopPropagation();
@@ -813,8 +853,8 @@ function renderIndexHtml(
         const id = a.fileName.replace('.html', '');
         const avatarUrl = a.authorAvatar || ('https://unavatar.io/x/' + (a.authorHandle || ''));
         var tagsHtml = (a.hashtags && a.hashtags.length > 0) ? '<div class="article-tags">' + a.hashtags.slice(0, 5).map(function(t) { return '<span class="tag">#' + t + '</span>'; }).join('') + '</div>' : '';
-        var swipeActions = '<div class="swipe-actions"><button class="swipe-btn pin" onclick="pinItem(\\'' + id + '\\', ' + (a.pinned ? 'false' : 'true') + ')">' + pinLabel + '</button><button class="swipe-btn read" onclick="' + (a.unread ? 'markRead(\\'' + id + '\\')' : 'markUnread(\\'' + id + '\\')') + '">' + (a.unread ? '标为已读' : '标为未读') + '</button>' + (a.tweetUrl ? '<button class="swipe-btn source" onclick="window.open(\\'' + a.tweetUrl + '\\', \\'_blank\\')">原文</button>' : '') + '<button class="swipe-btn delete" onclick="deleteItem(\\'' + id + '\\')">删除</button></div>';
-        return '<li class="article-item' + (a.pinned ? ' pinned' : '') + '" id="item-' + id + '"><div class="swipe-wrap"><div class="item-row swipe-content"><a href="articles/' + a.fileName + '" class="article-link" onclick="markRead(\\'' + id + '\\')"><div class="article-title-wrap">' + a.title + pinnedBadge + '</div><div class="article-meta"><img src="' + avatarUrl + '" alt="" class="meta-avatar" loading="lazy" /><span class="meta-author">' + a.author + '</span><span class="meta-time">收藏于 ' + (a.savedDate || '').substring(5) + ' · 更新于 ' + a.tweetDate.substring(5) + '</span></div><div class="article-stats"><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>' + (a.replies||0) + '</span><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>' + (a.retweets||0) + '</span><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>' + (a.likes||0) + '</span></div>' + tagsHtml + '</a><div class="item-actions">' + unreadDot + '<div class="more-wrap"><button class="more-btn" onclick="toggleMenu(event, \\'' + id + '\\')">⋯</button><div class="dropdown-menu" id="menu-' + id + '"><div class="dropdown-item" onclick="pinItem(\\'' + id + '\\', ' + (a.pinned ? 'false' : 'true') + ')">' + pinLabel + '</div><div class="dropdown-item" onclick="' + (a.unread ? 'markRead(\\'' + id + '\\')' : 'markUnread(\\'' + id + '\\')') + '">' + (a.unread ? '标为已读' : '标为未读') + '</div>' + (a.tweetUrl ? '<div class="dropdown-item" onclick="window.open(\\'' + a.tweetUrl + '\\', \\'_blank\\')">查看原文</div>' : '') + '<div class="dropdown-item delete" onclick="deleteItem(\\'' + id + '\\')">删除</div></div></div></div></div>' + swipeActions + '</div></li>';
+        var swipeActions = '<div class="swipe-actions"><button class="swipe-btn pin" onclick="event.stopPropagation(); pinItem(\\'' + id + '\\', ' + (a.pinned ? 'false' : 'true') + ')">' + pinLabel + '</button><button class="swipe-btn read" onclick="event.stopPropagation(); ' + (a.unread ? 'markRead(\\'' + id + '\\')' : 'markUnread(\\'' + id + '\\')') + '">' + (a.unread ? '标为已读' : '标为未读') + '</button>' + (a.tweetUrl ? '<button class="swipe-btn source" onclick="event.stopPropagation(); window.open(\\'' + a.tweetUrl + '\\', \\'_blank\\')">原文</button>' : '') + '<button class="swipe-btn delete" onclick="event.stopPropagation(); deleteItem(\\'' + id + '\\')">删除</button></div>';
+        return '<li class="article-item' + (a.pinned ? ' pinned' : '') + '" id="item-' + id + '"><div class="swipe-wrap"><div class="item-row swipe-content"><a href="articles/' + a.fileName + '" class="article-link" onclick="markReadNoRender(\\'' + id + '\\')"><div class="article-title-wrap">' + a.title + pinnedBadge + '</div><div class="article-meta"><img src="' + avatarUrl + '" alt="" class="meta-avatar" loading="lazy" /><span class="meta-author">' + a.author + '</span><span class="meta-time">收藏于 ' + (a.savedDate || '').substring(5) + ' · 更新于 ' + a.tweetDate.substring(5) + '</span></div><div class="article-stats"><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>' + (a.replies||0) + '</span><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>' + (a.retweets||0) + '</span><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>' + (a.likes||0) + '</span></div>' + tagsHtml + '</a><div class="item-actions">' + unreadDot + '<div class="more-wrap"><button class="more-btn" onclick="toggleMenu(event, \\'' + id + '\\')">⋯</button><div class="dropdown-menu" id="menu-' + id + '"><div class="dropdown-item" onclick="pinItem(\\'' + id + '\\', ' + (a.pinned ? 'false' : 'true') + ')">' + pinLabel + '</div><div class="dropdown-item" onclick="' + (a.unread ? 'markRead(\\'' + id + '\\')' : 'markUnread(\\'' + id + '\\')') + '">' + (a.unread ? '标为已读' : '标为未读') + '</div>' + (a.tweetUrl ? '<div class="dropdown-item" onclick="window.open(\\'' + a.tweetUrl + '\\', \\'_blank\\')">查看原文</div>' : '') + '<div class="dropdown-item delete" onclick="deleteItem(\\'' + id + '\\')">删除</div></div></div></div></div>' + swipeActions + '</div></li>';
       }).join('');
     }
 
@@ -849,7 +889,23 @@ function renderIndexHtml(
           fetch('/api/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: data, keepalive: true });
         }
         item.unread = false;
-        renderList();
+        setTimeout(renderList, 150);
+      }
+    }
+
+    function markReadNoRender(id) {
+      const item = articlesData.find(a => a.fileName === id + '.html');
+      if (item && item.unread) {
+        item.unread = false;
+        // Immediately hide the red dot in DOM so it's gone on back-navigation
+        var dot = document.querySelector('#item-' + id + ' .unread-dot');
+        if (dot) dot.style.display = 'none';
+        const data = JSON.stringify({ id: id + '.html' });
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon('/api/read', new Blob([data], { type: 'application/json' }));
+        } else {
+          fetch('/api/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: data, keepalive: true });
+        }
       }
     }
 
@@ -880,43 +936,117 @@ function renderIndexHtml(
       }
     }
 
-    // ---- Mobile swipe handling ----
+    // ---- Mobile swipe handling (WeChat-style) ----
     (function initSwipe() {
-      var SWIPE_THRESHOLD = 50;
-      var ELASTIC_LIMIT = SWIPE_THRESHOLD * 1.2;
-      var DAMPING = 0.6;
-      var SPEED_THRESHOLD = 0.5;
+      var DAMPING = 1.0;
       var VERTICAL_RATIO = 1.2;
-      var TRANSITION_STYLE = 'transform 0.3s cubic-bezier(0.25, 0.1, 0.25, 1)';
+      var TRANSITION_DURATION = 1500;
+      var TRANSITION_STYLE = 'transform 0.35s cubic-bezier(0.32, 0.72, 0, 1)';
+      var OVERSCROLL = 40;
+      var CLICK_THRESHOLD = 20;
+      var CLICK_TIME = 300;
 
-      var startX = 0;
-      var startY = 0;
-      var startTime = 0;
-      var currentX = 0;
-      var currentY = 0;
-      var activeSwipeContent = null;
-      var activeSwipeActions = null;
-      var isSwiping = false;
-      var isScrolling = false;
-      var isExpanded = false;
+      var startX = 0, startY = 0, startTime = 0;
+      var currentX = 0, currentY = 0;
+      var activeSwipeContent = null, activeSwipeActions = null;
+      var isSwiping = false, isScrolling = false, isExpanded = false;
+      var actionsWidth = 0;
+      // Track which item is expanded so closeAllSwipes can check actual state
+      var expandedContent = null;
 
       function getTranslateX(el) {
-        var style = el.style.transform;
-        if (!style) return 0;
-        var match = style.match(/translateX\(([-\d.]+)px\)/);
-        return match ? parseFloat(match[1]) : 0;
+        var style = window.getComputedStyle(el).transform;
+        if (!style || style === 'none') return 0;
+        var match = style.match(/matrix\(([^,]+),([^,]+),([^,]+),([^,]+),([^,]+),([^)]+)\)/);
+        if (match) return parseFloat(match[5]);
+        var match3d = style.match(/matrix3d\(([^)]+)\)/);
+        if (match3d) {
+          var values = match3d[1].split(',');
+          return values.length >= 13 ? parseFloat(values[12]) : 0;
+        }
+        return 0;
       }
 
       function setTranslateX(el, offset, withTransition) {
-        if (withTransition) {
-          el.style.transition = TRANSITION_STYLE;
-        } else {
-          el.style.transition = 'none';
-        }
+        el.style.transition = withTransition ? TRANSITION_STYLE : 'none';
         el.style.transform = 'translateX(' + offset + 'px)';
       }
 
+      function hideSwipeActions(actions) {
+        if (!actions) return;
+        if (actions._closing) return; // animation in progress
+        actions.style.transition = TRANSITION_STYLE;
+        void actions.offsetWidth;
+        actions.style.transform = 'translateX(100%)';
+        setTimeout(function() {
+          if (actions.style.transform === 'translateX(100%)') actions.style.display = 'none';
+        }, TRANSITION_DURATION);
+      }
+
+      function showSwipeActions(actions) {
+        if (!actions) return;
+        _cancelCloseAnim(actions);
+        actions.style.display = 'flex';
+        actions.style.transition = 'none';
+        actions.style.transform = 'translateX(100%)';
+        // force reflow
+        void actions.offsetWidth;
+      }
+
+      function _parseTranslateX(el) {
+        var computed = window.getComputedStyle(el).transform;
+        if (!computed || computed === 'none') return 0;
+        var m = computed.match(/matrix\(([^)]+)\)/);
+        if (m) {
+          var parts = m[1].split(',');
+          return parseFloat(parts[4]) || 0;
+        }
+        var m3d = computed.match(/matrix3d\(([^)]+)\)/);
+        if (m3d) {
+          var p = m3d[1].split(',');
+          return parseFloat(p[12]) || 0;
+        }
+        return 0;
+      }
+
+      function _startCloseAnim(actions) {
+        if (!actions) return;
+        _cancelCloseAnim(actions);
+        actions._closing = true;
+        actions.style.display = 'flex';
+        // Safari may not start a CSS transition for changes made during
+        // a touch event (touchend). Defer to the next macrotask so the
+        // browser has fully exited the touch sequence.
+        setTimeout(function() {
+          if (!actions._closing) return;
+          // Reset to visible position. Must use explicit '0px' — setting ''
+          // reverts to the CSS default translateX(100%) = off-screen, so the
+          // "animation" goes from 100%→100% = no change = no transition.
+          actions.style.transition = 'none';
+          actions.style.transform = 'translateX(0px)';
+          void actions.offsetWidth;
+          actions.style.transition = TRANSITION_STYLE;
+          actions.style.transform = 'translateX(100%)';
+          var handler = function() {
+            actions.removeEventListener('transitionend', handler);
+            actions._closing = false;
+            actions.style.display = 'none';
+          };
+          actions.addEventListener('transitionend', handler);
+        }, 0);
+      }
+
+      function _cancelCloseAnim(actions) {
+        if (!actions) return;
+        actions._closing = false;
+      }
+
       function closeAllSwipes() {
+        if (isSwiping) return;
+        // Check actual content position, not the isExpanded flag which
+        // can get out of sync in Safari's event timing.
+        if (expandedContent && getTranslateX(expandedContent) < -10) return;
+        expandedContent = null;
         var wraps = document.querySelectorAll('.swipe-wrap');
         for (var i = 0; i < wraps.length; i++) {
           var content = wraps[i].querySelector('.swipe-content');
@@ -925,7 +1055,7 @@ function renderIndexHtml(
             content.style.transition = TRANSITION_STYLE;
             content.style.transform = '';
           }
-          if (actions) actions.style.display = 'none';
+          hideSwipeActions(actions);
         }
         activeSwipeContent = null;
         activeSwipeActions = null;
@@ -933,144 +1063,172 @@ function renderIndexHtml(
       }
 
       document.addEventListener('click', function(e) {
-        if (!e.target.closest('.swipe-actions')) {
-          closeAllSwipes();
-        }
+        if (e.target.closest('.swipe-actions')) return;
+        // Defer to let <a> navigation happen first
+        setTimeout(closeAllSwipes, 0);
       });
 
       document.addEventListener('touchstart', function(e) {
         var wrap = e.target.closest('.swipe-wrap');
+        // If touch is outside swipe-wrap but an item is expanded, don't
+        // close it — iOS hard press can shift touch coordinates.
         if (!wrap) {
-          closeAllSwipes();
+          if (!expandedContent || !(getTranslateX(expandedContent) < -10)) {
+            closeAllSwipes();
+          }
           return;
         }
         var content = wrap.querySelector('.swipe-content');
         if (!content) return;
+        if (e.touches.length > 1) { isSwiping = false; return; }
 
-        // Multi-touch guard
-        if (e.touches.length > 1) {
-          isSwiping = false;
-          return;
-        }
+        var newActions = wrap.querySelector('.swipe-actions');
 
         startX = e.touches[0].clientX;
         startY = e.touches[0].clientY;
         startTime = Date.now();
-        currentX = startX;
-        currentY = startY;
-        isSwiping = true;
-        isScrolling = false;
-        isExpanded = getTranslateX(content) <= -SWIPE_THRESHOLD / 2;
+        currentX = startX; currentY = startY;
+        isSwiping = true; isScrolling = false;
 
-        // Close other open swipes with animation
+        var currentOffset = getTranslateX(content);
+        isExpanded = currentOffset < -10;
+        actionsWidth = 0;
+
+        // When expanded, lock buttons in visible position during the gesture.
+        if (isExpanded && newActions) {
+          newActions.style.display = 'flex';
+          newActions.style.transition = 'none';
+          newActions.style.transform = 'translateX(0px)';
+        }
+
+        // Close other open swipes before setting active
         if (activeSwipeContent && activeSwipeContent !== content) {
           var otherWrap = activeSwipeContent.closest('.swipe-wrap');
-          var otherActions = otherWrap ? otherWrap.querySelector('.swipe-actions') : null;
-          activeSwipeContent.style.transition = TRANSITION_STYLE;
-          activeSwipeContent.style.transform = '';
-          if (otherActions) otherActions.style.display = 'none';
+          if (otherWrap) {
+            var otherContent = otherWrap.querySelector('.swipe-content');
+            var otherActions = otherWrap.querySelector('.swipe-actions');
+            if (otherContent) {
+              otherContent.style.transition = TRANSITION_STYLE;
+              otherContent.style.transform = '';
+            }
+            hideSwipeActions(otherActions);
+          }
         }
 
         activeSwipeContent = content;
-        activeSwipeActions = wrap.querySelector('.swipe-actions');
+        activeSwipeActions = newActions;
       }, { passive: true });
 
       document.addEventListener('touchmove', function(e) {
         if (!isSwiping || !activeSwipeContent) return;
-
-        // Multi-touch guard
-        if (e.touches.length > 1) {
-          isSwiping = false;
-          return;
-        }
+        if (e.touches.length > 1) { isSwiping = false; return; }
 
         currentX = e.touches[0].clientX;
         currentY = e.touches[0].clientY;
         var deltaX = currentX - startX;
         var deltaY = currentY - startY;
 
-        // Vertical scroll conflict resolution
+        // Resolve vertical scroll conflict
         if (!isScrolling && Math.abs(deltaY) > Math.abs(deltaX) * VERTICAL_RATIO) {
-          isScrolling = true;
-          isSwiping = false;
-          return;
+          isScrolling = true; isSwiping = false; return;
         }
         if (isScrolling) return;
 
-        // Horizontal swipe — prevent page scroll
-        e.preventDefault();
+        // Lazy-init: show swipe actions only when user actually swipes (not on tap)
+        if (!actionsWidth && Math.abs(deltaX) > 5 && activeSwipeActions) {
+          if (!isExpanded) {
+            showSwipeActions(activeSwipeActions);
+          }
+          actionsWidth = activeSwipeActions.offsetWidth || activeSwipeActions.scrollWidth || 200;
+        }
+        if (!actionsWidth) return;
 
         var offset;
-        var currentOffset = getTranslateX(activeSwipeContent);
-        var wasExpanded = currentOffset <= -SWIPE_THRESHOLD / 2;
-
         if (deltaX < 0) {
-          // Left swipe (open)
-          if (wasExpanded) {
-            offset = -SWIPE_THRESHOLD + deltaX * DAMPING;
-          } else {
-            offset = deltaX * DAMPING;
+          // Left swipe — content follows finger, buttons slide in from right
+          offset = isExpanded ? -actionsWidth + deltaX * DAMPING : deltaX * DAMPING;
+          // Cap left-swipe on closed items: once buttons are fully visible,
+          // don't let content go further left and create a white gap.
+          if (!isExpanded && offset < -actionsWidth) {
+            var over = offset + actionsWidth;
+            offset = -actionsWidth + over * 0.3; // elastic dampening
           }
-        } else if (deltaX > 0 && wasExpanded) {
-          // Right swipe to close (from expanded state)
-          offset = -SWIPE_THRESHOLD + deltaX * DAMPING;
+        } else if (deltaX > 0 && isExpanded) {
+          // Right swipe to close — from expanded state
+          offset = -actionsWidth + deltaX * DAMPING;
         } else {
-          // Right swipe on closed item — ignore
-          return;
+          return; // Right swipe on closed item — ignore
         }
 
-        // Elastic boundary
-        if (offset < -ELASTIC_LIMIT) {
-          var over = offset + ELASTIC_LIMIT;
-          offset = -ELASTIC_LIMIT + over * 0.3;
+        // Elastic overscroll
+        if (offset < -actionsWidth - OVERSCROLL) {
+          var over = offset + actionsWidth + OVERSCROLL;
+          offset = -actionsWidth - OVERSCROLL + over * 0.3;
         }
-        if (offset > 0) offset = 0;
+        if (offset > OVERSCROLL) {
+          offset = OVERSCROLL + (offset - OVERSCROLL) * 0.3;
+        }
 
         setTranslateX(activeSwipeContent, offset, false);
 
-        // Show actions when swiping left past threshold
-        if (activeSwipeActions && offset < -SWIPE_THRESHOLD / 2) {
-          activeSwipeActions.style.display = 'flex';
+        // On right-swipe (close): keep buttons visible, only track content.
+        // Buttons slide out via _startCloseAnim at touchend instead.
+        // On left-swipe (open): track buttons in sync with content.
+        if (activeSwipeActions && !(deltaX > 0 && isExpanded)) {
+          var btnOffset = Math.max(0, Math.min(actionsWidth, actionsWidth + offset));
+          activeSwipeActions.style.transition = 'none';
+          activeSwipeActions.style.transform = 'translateX(' + btnOffset + 'px)';
         }
-      }, { passive: false });
+      }, { passive: true });
 
-      document.addEventListener('touchend', function(e) {
-        if (!isSwiping || !activeSwipeContent) return;
+      document.addEventListener('touchend', function() {
+        if (!isSwiping || !activeSwipeContent || !actionsWidth) return;
         isSwiping = false;
 
         var deltaX = currentX - startX;
         var elapsed = Date.now() - startTime;
-        var speed = elapsed > 0 ? Math.abs(deltaX) / elapsed : 0;
-        var currentOffset = getTranslateX(activeSwipeContent);
-        var wrap = activeSwipeContent.closest('.swipe-wrap');
-        var actions = wrap ? wrap.querySelector('.swipe-actions') : null;
 
-        var shouldExpand = false;
-
-        if (speed > SPEED_THRESHOLD) {
-          // Velocity-based snap
-          if (deltaX < 0) {
-            shouldExpand = true;
-          } else if (deltaX > 0 && isExpanded) {
-            shouldExpand = false;
-          } else {
-            shouldExpand = currentOffset <= -SWIPE_THRESHOLD / 2;
-          }
-        } else {
-          // Distance-based snap
-          shouldExpand = currentOffset <= -SWIPE_THRESHOLD / 2;
-        }
-
-        if (shouldExpand) {
-          setTranslateX(activeSwipeContent, -SWIPE_THRESHOLD, true);
-          if (actions) actions.style.display = 'flex';
-          isExpanded = true;
-        } else {
-          setTranslateX(activeSwipeContent, 0, true);
-          if (actions) actions.style.display = 'none';
+        // Treat as tap/click if minimal movement and short duration
+        if (Math.abs(deltaX) <= CLICK_THRESHOLD && elapsed < CLICK_TIME) {
+          // Let click event fire naturally; don't mutate DOM here
           activeSwipeContent = null;
           activeSwipeActions = null;
           isExpanded = false;
+          expandedContent = null;
+          return;
+        }
+
+        var currentOffset = getTranslateX(activeSwipeContent);
+        var speed = elapsed > 0 ? Math.abs(deltaX) / elapsed : 0;
+
+        // Right swipe always collapses; left swipe expands if past threshold or fast
+        if (deltaX > 0) {
+          setTranslateX(activeSwipeContent, 0, true);
+          if (activeSwipeActions) {
+            _startCloseAnim(activeSwipeActions);
+          }
+          activeSwipeContent = null;
+          activeSwipeActions = null;
+          isExpanded = false;
+          expandedContent = null;
+        } else if (currentOffset <= -actionsWidth / 4 || speed > 0.5) {
+          setTranslateX(activeSwipeContent, -actionsWidth, true);
+          if (activeSwipeActions) {
+            _cancelCloseAnim(activeSwipeActions);
+            activeSwipeActions.style.transition = TRANSITION_STYLE;
+            activeSwipeActions.style.transform = 'translateX(0)';
+          }
+          isExpanded = true;
+          expandedContent = activeSwipeContent;
+        } else {
+          setTranslateX(activeSwipeContent, 0, true);
+          if (activeSwipeActions) {
+            _startCloseAnim(activeSwipeActions);
+          }
+          activeSwipeContent = null;
+          activeSwipeActions = null;
+          isExpanded = false;
+          expandedContent = null;
         }
       }, { passive: true });
 
@@ -1080,13 +1238,14 @@ function renderIndexHtml(
           var actions = wrap ? wrap.querySelector('.swipe-actions') : null;
           activeSwipeContent.style.transition = TRANSITION_STYLE;
           activeSwipeContent.style.transform = '';
-          if (actions) actions.style.display = 'none';
+          if (actions && !actions._closing) {
+            _startCloseAnim(actions);
+          }
           activeSwipeContent = null;
           activeSwipeActions = null;
         }
-        isSwiping = false;
-        isScrolling = false;
-        isExpanded = false;
+        isSwiping = false; isScrolling = false; isExpanded = false;
+        expandedContent = null;
       }, { passive: true });
     })();
   </script>
@@ -1192,12 +1351,16 @@ export async function saveTweet(tweet: FetchedTweet): Promise<string> {
   const localImagePaths: string[] = [...allImageUrls];
   const localVideoPaths: string[] = [...allVideoUrls];
 
-  // Try to download images (best-effort via proxy)
+  // Try to download images (best-effort via proxy); skip if already exists
   for (let i = 0; i < photos.length; i++) {
     const photo = photos[i];
     const ext = path.extname(new URL(photo.url).pathname) || '.jpg';
     const imgFileName = fileNameBase + '_img' + i + ext;
     const imgPath = path.join(IMAGES_DIR, imgFileName);
+    if (fs.existsSync(imgPath) && fs.statSync(imgPath).size > 0) {
+      localImagePaths[i] = '../images/' + imgFileName;
+      continue;
+    }
     try {
       await downloadFile(photo.url, imgPath);
       localImagePaths[i] = '../images/' + imgFileName;
@@ -1206,12 +1369,16 @@ export async function saveTweet(tweet: FetchedTweet): Promise<string> {
     }
   }
 
-  // Try to download videos (best-effort via proxy)
+  // Try to download videos (best-effort via proxy); skip if already exists
   for (let i = 0; i < videos.length; i++) {
     const video = videos[i];
     const ext = '.mp4';
     const vidFileName = fileNameBase + '_vid' + i + ext;
     const vidPath = path.join(VIDEOS_DIR, vidFileName);
+    if (fs.existsSync(vidPath) && fs.statSync(vidPath).size > 0) {
+      localVideoPaths[i] = '../videos/' + vidFileName;
+      continue;
+    }
     try {
       await downloadFile(video.url, vidPath);
       localVideoPaths[i] = '../videos/' + vidFileName;
