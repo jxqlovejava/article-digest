@@ -940,7 +940,7 @@ function renderIndexHtml(
     (function initSwipe() {
       var DAMPING = 1.0;
       var VERTICAL_RATIO = 1.2;
-      var TRANSITION_DURATION = 1500;
+      var TRANSITION_DURATION = 2500;
       var TRANSITION_STYLE = 'transform 0.35s cubic-bezier(0.32, 0.72, 0, 1)';
       var OVERSCROLL = 40;
       var CLICK_THRESHOLD = 20;

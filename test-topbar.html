@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Test Top Bar Alignment</title>
+  <style>
+    :root {
+      --bg: #f5f5f5; --surface: #fff; --text: #1a1a1a;
+      --text-secondary: #888; --text-tertiary: #aaa;
+      --accent: #576b95; --accent-bg: #eef2ff;
+      --border: #eee; --shadow-sm: rgba(0,0,0,0.05); --shadow-md: rgba(0,0,0,0.1);
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.75;
+      -webkit-font-smoothing: antialiased;
+    }
+    .container { max-width: 740px; margin: 0 auto; padding: 20px 16px 40px; }
+
+    /* --- top-bar: icons align with article-card border --- */
+    .top-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      color: #576b95;
+      text-decoration: none;
+      padding: 8px 0;
+    }
+    .back-link:hover { text-decoration: underline; }
+    .theme-btn {
+      width: 32px; height: 32px; border: none; border-radius: 50%;
+      background: transparent; color: var(--text-secondary); cursor: pointer;
+      display: flex; align-items: center; justify-content: center; transition: all 0.2s;
+    }
+    .theme-btn:hover { color: var(--text); }
+
+    /* --- article card --- */
+    .article-card {
+      background: var(--surface);
+      border-radius: 8px;
+      padding: 32px 24px;
+      box-shadow: 0 1px 3px var(--shadow-sm);
+    }
+    .article-title { font-size: 24px; font-weight: 700; line-height: 1.4; color: var(--text); margin-bottom: 16px; }
+    .article-content { font-size: 16px; line-height: 1.75; }
+    .article-content p { margin-bottom: 16px; }
+
+    @media (max-width: 480px) {
+      .article-card { padding: 24px 16px; }
+      .article-title { font-size: 20px; }
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+  <!-- Top bar -->
+  <div class="top-bar">
+    <a href="/" class="back-link" title="返回列表">
+      <svg width="20" height="16" viewBox="0 0 20 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M18 8H2"/>
+        <path d="M8 2l-6 6 6 6"/>
+      </svg>
+    </a>
+    <button class="theme-btn" title="切换主题">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="5"/>
+        <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+      </svg>
+    </button>
+  </div>
+
+  <!-- Article card -->
+  <article class="article-card">
+    <h1 class="article-title">公众号新号从0到1起号保姆级全阶教程（附SOP、提示词）</h1>
+    <div class="article-content">
+      <p>公众号到现在仍然是值得做的一个平台，不管是IP打造，还是流量主收益。单很多人被卡在起号阶段，发30天都还是个位数、2位数阅读。今天我把0-1起号方法公开。</p>
+      <p>新号起号是一套系统的"建城"工程。你需要从地基（账号框架）、图纸（定位对标）、施工（内容创作）到交付（运营养号）步步为营。</p>
+    </div>
+  </article>
+</div>
+</body>
+</html>
