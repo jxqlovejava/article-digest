@@ -201,6 +201,7 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
 
   // Step 2: convert markdown to HTML via marked (skip for wechat — content is already HTML)
   const isWechat = tweet.sourceType === 'wechat';
+  const isWebpage = tweet.sourceType === 'webpage';
   let contentHtml = isWechat ? text : convertMarkdownToHtml(text);
 
   // Step 3: replace image markers with real <img> tags
@@ -237,28 +238,38 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>${escapeHtml(title)}</title>
-  <link rel="icon" type="image/png" href="/favicon.png" />
+  <link rel="icon" type="image/png" href="/favicon.png?v=3" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=3" />
   <link rel="stylesheet" href="/highlight.css" id="hl-theme-light">
   <link rel="stylesheet" href="/highlight-dark.css" id="hl-theme-dark" disabled>
   <style>
     :root {
       --bg: #f5f5f5; --surface: #fff; --text: #1a1a1a;
       --text-secondary: #888; --text-tertiary: #aaa;
-      --accent: #576b95; --accent-bg: #eef2ff;
-      --ai-fab: #8a9fe0;
+      --accent: #5a5a5a; --accent-bg: #f0f0f0;
+      --ai-fab-bg: rgba(255,255,255,0.72);
+      --ai-fab-fg: #6c63ff;
+      --ai-fab-shadow: 0 4px 14px rgba(15,23,42,0.10), 0 1px 3px rgba(15,23,42,0.06);
+      --ai-fab-shadow-hover: 0 8px 22px rgba(108,99,255,0.18), 0 2px 6px rgba(15,23,42,0.08);
       --border: #eee; --shadow-sm: rgba(0,0,0,0.05); --shadow-md: rgba(0,0,0,0.1);
       --code-bg: #f2f2f2; --code-color: #d63384;
     }
     [data-theme="dark"] {
       --bg: #0f0f0f; --surface: #1a1a1a; --text: #e8e8e8;
       --text-secondary: #b0b0b0; --text-tertiary: #888;
-      --accent: #8aa4c8; --accent-bg: #1c2738;
-      --ai-fab: #a8b8f0;
+      --accent: #b0b0b0; --accent-bg: #2a2a2a;
+      --ai-fab-bg: rgba(28,28,30,0.68);
+      --ai-fab-fg: #b4a7ff;
+      --ai-fab-shadow: 0 4px 16px rgba(0,0,0,0.35), 0 1px 3px rgba(0,0,0,0.25);
+      --ai-fab-shadow-hover: 0 8px 24px rgba(0,0,0,0.45), 0 0 0 1px rgba(180,167,255,0.16);
       --border: #3a3a3a; --shadow-sm: rgba(0,0,0,0.3); --shadow-md: rgba(0,0,0,0.4);
       --code-bg: #2d2d2d; --code-color: #ff8fab;
     }
-    [data-theme="dark"] .sort-btn.active {
-      background: var(--accent-bg); color: var(--accent); border-color: var(--accent);
+    [data-theme="dark"] .sort-btn.active,
+    [data-theme="dark"] .sort-btn.active:hover,
+    [data-theme="dark"] .sort-btn.active:focus,
+    [data-theme="dark"] .sort-btn.active:active {
+      background: var(--accent-bg); color: var(--accent); border-color: var(--accent-bg);
     }
     @keyframes skeleton-pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 0.7; } }
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -309,7 +320,7 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
       -webkit-tap-highlight-color: transparent;
     }
     .back-link:hover { color: var(--text); }
-    .back-link svg { width: 18px; height: 18px; }
+    .back-link svg { width: 20px; height: 20px; }
     .article-header .stats-bar { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--text-secondary); margin-top: 8px; }
     .stats-bar .stat { display: inline-flex; align-items: center; gap: 3px; }
 
@@ -445,18 +456,31 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
     .share-save-btn:focus-visible,
     .share-close-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     .ask-ai-btn {
-      position: fixed; bottom: 24px; right: 24px; z-index: 9999;
-      width: 44px; height: 44px; border: none; border-radius: 0;
-      background: transparent; color: var(--ai-fab); cursor: pointer;
+      position: fixed; bottom: 24px; right: 20px; z-index: 9999;
+      width: 46px; height: 46px; border-radius: 50%;
+      border: none;
+      background: var(--ai-fab-bg);
+      color: var(--ai-fab-fg);
+      cursor: pointer;
       display: flex; align-items: center; justify-content: center;
-      box-shadow: none; transition: all 0.2s;
+      box-shadow: var(--ai-fab-shadow);
+      backdrop-filter: blur(14px) saturate(1.15);
+      -webkit-backdrop-filter: blur(14px) saturate(1.15);
+      transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1),
+                  box-shadow 0.2s ease, background 0.2s ease, color 0.2s ease;
       -webkit-tap-highlight-color: transparent;
+      text-decoration: none;
     }
-    .ask-ai-btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
-    .ask-ai-btn:active { transform: translateY(0) scale(0.95); }
-    .ask-ai-btn svg { width: 100%; height: 100%; }
+    .ask-ai-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: var(--ai-fab-shadow-hover);
+    }
+    .ask-ai-btn:active { transform: translateY(0) scale(0.96); }
+    .ask-ai-btn:focus-visible { outline: 2px solid var(--ai-fab-fg); outline-offset: 3px; }
+    .ask-ai-btn svg { width: 22px; height: 22px; display: block; }
     @media (max-width: 480px) {
-      .ask-ai-btn { bottom: 20px; right: 16px; width: 40px; height: 40px; }
+      .ask-ai-btn { bottom: 20px; right: 14px; width: 44px; height: 44px; }
+      .ask-ai-btn svg { width: 20px; height: 20px; }
     }
     /* ---- Image lightbox ---- */
     .img-lightbox {
@@ -508,7 +532,7 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
 <div class="container">
     <div class="top-bar">
     <a href="/" class="back-link" title="返回列表" onclick="history.length>1?history.back():null;return false">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><polyline points="12 19 5 12 12 5"/></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12H6"/><path d="M12 5l-7 7 7 7"/></svg>
     </a>
     <div style="display:flex;align-items:center;gap:4px;">
       <span class="share-btn" id="shareBtn" onclick="openSharePreview()" title="分享长图">${ICONS.share}</span>
@@ -527,7 +551,7 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
           ${tweet.author.avatar_url ? `<img src="${escapeHtml(tweet.author.avatar_url)}" alt="" class="avatar" loading="lazy" />` : ''}
           <div class="author-info">
             <span class="author-name">${escapeHtml(tweet.author.name)}</span>
-            <span class="author-handle">${isWechat ? escapeHtml(tweet.author.screen_name) : '@' + escapeHtml(tweet.author.screen_name)}</span>
+            <span class="author-handle">${(isWechat || isWebpage) ? escapeHtml(tweet.author.screen_name) : '@' + escapeHtml(tweet.author.screen_name)}</span>
           </div>
           <span class="divider">|</span>
           <span class="date">${dateStr}</span>
@@ -814,7 +838,7 @@ function updateThemeIcon() {
   }
 })();
 </script>
-<a href="/qa" class="ask-ai-btn" title="问 AI" aria-label="问 AI" id="askAiBtn"><svg width="44" height="44" viewBox="253 190 294 420" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><g transform="translate(0.336932,821.343911) scale(0.102831,-0.102831)" fill="currentColor" stroke="none"><path d="M3361 6105 c-10 -28 -20 -37 -52 -45 -21 -6 -39 -14 -39 -18 0 -3 12 -16 27 -28 22 -17 27 -29 25 -59 -2 -20 1 -35 5 -33 4 2 20 10 36 18 24 12 32 11 62 -3 l35 -17 -6 41 c-6 33 -3 44 17 65 25 27 19 40 -21 46 -15 2 -33 16 -45 35 -11 18 -22 32 -25 33 -4 0 -12 -16 -19 -35z"/><path d="M4037 5697 l5 -53 -41 -12 c-22 -7 -41 -17 -41 -22 0 -5 18 -19 41 -32 40 -22 40 -23 34 -65 -3 -24 -3 -43 1 -43 3 0 24 10 45 22 l39 22 28 -20 c54 -40 53 -40 46 14 l-6 50 41 22 c46 23 45 35 -5 56 -30 12 -33 18 -36 59 l-3 45 -36 -24 -36 -25 -34 29 c-19 16 -37 29 -41 30 -4 0 -4 -24 -1 -53z"/><path d="M2653 5654 c-7 -22 -16 -57 -22 -80 l-11 -40 -75 -13 c-41 -7 -77 -16 -79 -20 -3 -4 24 -27 60 -50 46 -30 63 -48 60 -59 -11 -40 -27 -134 -24 -138 3 -2 33 19 67 47 l63 51 71 -36 c39 -19 73 -34 75 -31 2 2 -8 36 -23 76 l-26 73 58 58 57 58 -84 0 -85 0 -23 55 c-13 29 -29 61 -36 70 -11 15 -14 12 -23 -21z"/><path d="M3253 5672 c-71 -26 -114 -61 -148 -123 -87 -161 21 -360 204 -376 120 -11 233 66 267 183 58 199 -131 384 -323 316z m143 -176 c44 -44 46 -92 7 -136 -23 -26 -36 -31 -72 -32 -38 0 -49 4 -74 32 -26 29 -29 38 -24 79 10 91 98 122 163 57z"/><path d="M3550 5129 c-42 -17 -80 -60 -80 -91 0 -34 17 -68 118 -243 78 -135 454 -792 1142 -1995 221 -388 409 -712 417 -722 37 -42 116 -23 148 36 18 33 18 34 -10 87 -15 30 -278 493 -585 1029 -306 536 -673 1178 -814 1425 -231 403 -283 487 -305 484 -3 0 -17 -5 -31 -10z"/><path d="M4210 4962 c-50 -24 -75 -78 -60 -131 14 -51 60 -91 106 -91 132 0 171 164 54 225 -37 19 -57 19 -100 -3z"/><path d="M2750 4870 c-9 -22 -22 -33 -51 -40 -43 -12 -43 -21 -1 -54 20 -16 23 -25 19 -53 -6 -35 3 -42 23 -18 16 20 60 19 89 -1 l23 -17 -7 50 c-5 42 -3 51 14 67 30 27 26 36 -14 36 -28 0 -37 5 -50 30 -20 38 -29 38 -45 0z"/><path d="M4781 4854 c-87 -73 -41 -204 72 -204 42 0 84 31 103 75 29 70 -29 155 -106 155 -27 0 -48 -8 -69 -26z"/><path d="M3224 4436 c-29 -29 -34 -41 -34 -81 0 -40 5 -52 34 -81 29 -29 41 -34 81 -34 40 0 52 5 81 34 29 29 34 41 34 81 0 40 -5 52 -34 81 -29 29 -41 34 -81 34 -40 0 -52 -5 -81 -34z"/></g></svg></a>
+<a href="/qa" class="ask-ai-btn" title="问 AI" aria-label="问 AI" id="askAiBtn"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs><linearGradient id="aiSpark" x1="3" y1="2" x2="21" y2="22" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#6366f1"/><stop offset="55%" stop-color="currentColor"/><stop offset="100%" stop-color="#a78bfa"/></linearGradient></defs><path d="M12 1.2l2.55 6.75 6.75 2.55-6.75 2.55L12 19.8l-2.55-6.75L2.7 10.5l6.75-2.55L12 1.2z" fill="url(#aiSpark)"/><path d="M19.2 15.1l1.25 3.15 3.15 1.25-3.15 1.25-1.25 3.15-1.25-3.15-3.15-1.25 3.15-1.25 1.25-3.15z" fill="url(#aiSpark)" opacity="0.88"/></svg></a>
 </div>
 </div>
 </body>
@@ -835,6 +859,7 @@ interface ArticleMeta {
   tweetTimestamp: number;
   savedTimestamp: number;
   contentKey: string;
+  sourceType?: 'twitter' | 'wechat' | 'webpage';
   pinned?: boolean;
   pinnedAt?: number;
   unread?: boolean;
@@ -955,7 +980,7 @@ function renderIndexHtml(
                     <span class="meta-author">${escapeHtml(a.author)}</span>
                     <span class="meta-time">收藏于 ${a.savedDate.substring(5)} · 更新于 ${a.tweetDate.substring(5)}</span>
                   </div>
-                  ${(Number(a.replies) > 0 || Number(a.retweets) > 0 || Number(a.likes) > 0) ? `<div class="article-stats">
+                  ${(a.sourceType !== 'wechat' && a.sourceType !== 'webpage' && (Number(a.replies) > 0 || Number(a.retweets) > 0 || Number(a.likes) > 0)) ? `<div class="article-stats">
                     <span class="stat">${ICONS.comment}<span>${(a.replies||0)}</span></span>
                     <span class="stat">${ICONS.repost}<span>${(a.retweets||0)}</span></span>
                     <span class="stat">${ICONS.like}<span>${(a.likes||0)}</span></span>
@@ -996,6 +1021,7 @@ function renderIndexHtml(
       savedDate: a.savedDate,
       savedTimestamp: a.savedTimestamp,
       tweetTimestamp: a.tweetTimestamp,
+      sourceType: a.sourceType || 'twitter',
       pinned: !!a.pinned,
       pinnedAt: a.pinnedAt || 0,
       unread: !!a.unread,
@@ -1012,50 +1038,77 @@ function renderIndexHtml(
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#f5f5f5" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0f0f0f" media="(prefers-color-scheme: dark)">
-  <link rel="icon" type="image/png" href="/favicon.png" />
-  <title>推文收藏</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="icon" type="image/png" href="/favicon.png?v=3" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=3" />
+  <title>开卷有益</title>
   <style>
     :root {
       --bg: #f5f5f5; --surface: #fff; --text: #1a1a1a;
       --text-secondary: #888; --text-tertiary: #aaa;
-      --accent: #576b95; --accent-bg: #eef2ff;
+      --accent: #5a5a5a; --accent-bg: #f0f0f0;
       --border: #eee; --shadow-sm: rgba(0,0,0,0.05); --shadow-md: rgba(0,0,0,0.1);
       --code-bg: #f2f2f2; --code-color: #d63384;
+      --sidebar-w: min(260px, 82vw);
     }
     [data-theme="dark"] {
       --bg: #0f0f0f; --surface: #1a1a1a; --text: #e8e8e8;
       --text-secondary: #b0b0b0; --text-tertiary: #888;
-      --accent: #8aa4c8; --accent-bg: #1c2738;
+      --accent: #b0b0b0; --accent-bg: #2a2a2a;
       --border: #3a3a3a; --shadow-sm: rgba(0,0,0,0.3); --shadow-md: rgba(0,0,0,0.4);
       --code-bg: #2d2d2d; --code-color: #ff8fab;
     }
-    [data-theme="dark"] .sort-btn.active {
-      background: var(--accent-bg); color: var(--accent); border-color: var(--accent);
+    [data-theme="dark"] .sort-btn.active,
+    [data-theme="dark"] .sort-btn.active:hover,
+    [data-theme="dark"] .sort-btn.active:focus,
+    [data-theme="dark"] .sort-btn.active:active {
+      background: var(--accent-bg); color: var(--accent); border-color: var(--accent-bg);
     }
     @keyframes skeleton-pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 0.7; } }
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; }
+    html, body { width: 100%; height: 100%; background: var(--bg); }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-      background: var(--bg); color: var(--text); min-height: 100vh;
+      background: var(--bg); color: var(--text); min-height: 100vh; min-height: 100dvh;
       -webkit-font-smoothing: antialiased; transition: background 0.3s ease, color 0.3s ease;
       line-height: 1.7;
     }
-    .page-wrapper { overflow-x: hidden; position: relative; min-height: 100vh; }
+    body.sidebar-open { overflow: hidden; }
+    body.sidebar-open .nav-bar {
+      display: none !important;
+    }
+    .page-wrapper { overflow-x: hidden; position: relative; min-height: 100vh; min-height: 100dvh; }
     .container { max-width: 740px; margin: 0 auto; padding: 0 16px 40px; }
-    /* Immersive nav bar (matches Q&A page) */
+    /* Solid nav bar for flush top on iOS Safari */
     .nav-bar {
       position: sticky; top: 0; z-index: 50;
       display: flex; flex-direction: column; gap: 4px;
       padding: max(8px, env(safe-area-inset-top)) 16px 10px;
       margin-bottom: 12px;
-      background: color-mix(in srgb, var(--bg) 88%, transparent);
-      backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      background: var(--bg);
+      border: none;
+      box-shadow: none;
+      -webkit-transform: translateZ(0);
+      transform: translateZ(0);
+    }
+    .nav-bar::before {
+      content: '';
+      position: absolute;
+      left: 0; right: 0;
+      bottom: 100%;
+      height: 200px;
+      background: inherit;
+      pointer-events: none;
     }
     .nav-bar .nav-row1 { display: flex; align-items: center; gap: 8px; }
     .nav-bar .nav-row2 { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
     .nav-bar .nav-title { font-size: 20px; font-weight: 700; color: var(--text); white-space: nowrap; }
-    .nav-bar .nav-count { font-size: 13px; color: var(--text-secondary); white-space: nowrap; }
+    /* Align count with title text (hamburger 36px + row gap 8px), not with menu button */
+    .nav-bar .nav-count {
+      font-size: 13px; color: var(--text-secondary); white-space: nowrap;
+      margin-left: 44px;
+    }
     .hamburger {
       width: 36px; height: 36px; border: none; border-radius: 50%; flex-shrink: 0;
       background: var(--surface); color: var(--text-secondary); cursor: pointer;
@@ -1073,14 +1126,38 @@ function renderIndexHtml(
       display: flex; align-items: center; justify-content: center; transition: all 0.2s;
     }
     .theme-btn:hover, .refresh-btn:hover { color: var(--text); }
+    /* Solid chips only — no hollow border that paints before fill */
     .sort-btn {
-      padding: 5px 10px; border: 1px solid var(--border); border-radius: 14px;
-      background: transparent; color: var(--text-secondary); font-size: 12px;
-      cursor: pointer; transition: all 0.2s; outline: none;
+      padding: 5px 10px;
+      border: 1px solid transparent;
+      border-radius: 14px;
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 12px;
+      cursor: pointer;
+      outline: none;
       white-space: nowrap;
+      transition: none !important;
+      -webkit-tap-highlight-color: transparent;
+      -webkit-appearance: none;
+      appearance: none;
     }
-    .sort-btn:hover { border-color: var(--accent); color: var(--accent); }
-    .sort-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .sort-btn:hover:not(.active),
+    .sort-btn:focus:not(.active),
+    .sort-btn:active:not(.active) {
+      border-color: transparent;
+      color: var(--text);
+      background: var(--accent-bg);
+    }
+    .sort-btn.active,
+    .sort-btn.active:hover,
+    .sort-btn.active:focus,
+    .sort-btn.active:active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+      transition: none !important;
+    }
     .search-input {
       padding: 5px 10px; border: 1px solid var(--border); border-radius: 14px;
       background: transparent; color: var(--text); font-size: 13px;
@@ -1179,7 +1256,7 @@ function renderIndexHtml(
       cursor: pointer; display: flex; align-items: center; justify-content: center;
       white-space: nowrap;
     }
-    .swipe-btn.pin { background: #576b95; }
+    .swipe-btn.pin { background: #5a5a5a; }
     .swipe-btn.read { background: #7d93ad; }
     .swipe-btn.source { background: #888; }
     .swipe-btn.delete { background: #fa5151; }
@@ -1203,41 +1280,105 @@ function renderIndexHtml(
     .more-btn:focus-visible,
     .dropdown-item:focus-visible,
     .article-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-    /* Sidebar drawer */
+    /*
+     * Doubao-style drawer:
+     * Outer shell full physical height incl. status bar; right edge continuous to top.
+     * Safe-area only on .sidebar-inner. Overlay only to the right of shell.
+     */
     .sidebar {
-      position: fixed; top: 0; left: 0; bottom: 0; width: 260px;
-      max-width: 82vw; background: var(--surface); z-index: 100;
-      display: flex; flex-direction: column;
-      transform: translateX(-100%); transition: transform 0.25s ease;
-      box-shadow: 2px 0 16px var(--shadow-sm);
-      padding-top: env(safe-area-inset-top, 0);
-      padding-bottom: env(safe-area-inset-bottom, 0);
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: var(--sidebar-w);
+      top: calc(0px - env(safe-area-inset-top, 0px));
+      height: calc(100% + env(safe-area-inset-top, 0px));
+      height: calc(100dvh + env(safe-area-inset-top, 0px));
+      height: calc(100svh + env(safe-area-inset-top, 0px));
+      min-height: calc(100% + env(safe-area-inset-top, 0px));
+      box-sizing: border-box;
+      padding: 0;
+      margin: 0;
+      background: var(--surface);
+      z-index: 1000;
+      border: none;
+      box-shadow: none;
+      outline: none;
+      left: calc(0px - var(--sidebar-w));
+      transition: left 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+      overflow: visible;
     }
-    .sidebar.open { transform: translateX(0); }
+    .sidebar.open {
+      left: 0;
+    }
+    .sidebar::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: -80px;
+      height: 80px;
+      background: var(--surface);
+      pointer-events: none;
+    }
+    .sidebar-inner {
+      position: relative;
+      z-index: 1;
+      height: 100%;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      /* extra space below status-bar time so 「导航」不贴系统时钟 */
+      padding-top: calc(env(safe-area-inset-top, 0px) + 20px);
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+      background: transparent;
+    }
     .sidebar-overlay {
-      position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 99;
-      opacity: 0; pointer-events: none; transition: opacity 0.25s ease;
+      position: fixed;
+      top: calc(0px - env(safe-area-inset-top, 0px));
+      right: 0;
+      bottom: 0;
+      left: var(--sidebar-w);
+      width: auto;
+      height: calc(100% + env(safe-area-inset-top, 0px));
+      height: calc(100dvh + env(safe-area-inset-top, 0px));
+      background: rgba(0, 0, 0, 0.35);
+      z-index: 999;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+      border: none;
     }
-    .sidebar-overlay.show { opacity: 1; pointer-events: auto; }
-    body.sidebar-open .nav-bar { background: var(--bg); backdrop-filter: none; -webkit-backdrop-filter: none; }
+    .sidebar-overlay.show {
+      opacity: 1;
+      pointer-events: auto;
+    }
     .sidebar-header {
-      display: flex; flex-direction: column; gap: 12px;
-      padding: 16px; flex-shrink: 0;
-      background: var(--bg);
-    }
-    .sidebar-header-top {
-      display: flex; align-items: center; justify-content: space-between;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 8px 16px 16px;
+      flex-shrink: 0;
+      background: transparent;
+      border: none;
     }
     .sidebar-header h3 { font-size: 18px; font-weight: 700; }
-    .sidebar-search-wrap { position: relative; }
+    .sidebar-search-wrap {
+      position: relative;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
     .sidebar-search {
       width: 100%; padding: 8px 12px 8px 32px;
       border: 1px solid var(--border); border-radius: 10px;
-      background: var(--surface); color: var(--text);
+      background: #fafafa; color: var(--text);
       font-size: 14px; outline: none; font-family: inherit;
+      cursor: pointer;
+      pointer-events: none;
     }
+    [data-theme="dark"] .sidebar-search { background: #242424; }
     .sidebar-search::placeholder { color: var(--text-tertiary); }
-    .sidebar-search:focus { border-color: var(--accent); }
+    .sidebar-search:focus { border-color: var(--border); outline: none; }
     .sidebar-search-icon {
       position: absolute; left: 10px; top: 50%;
       transform: translateY(-50%);
@@ -1286,36 +1427,33 @@ function renderIndexHtml(
   </style>
 </head>
 <body>
-<div class="page-wrapper">
 <div class="sidebar" id="sidebar">
-  <div class="sidebar-header">
-    <div class="sidebar-header-top">
+  <div class="sidebar-inner">
+    <div class="sidebar-header">
       <h3>导航</h3>
-      <button class="hamburger" onclick="closeSidebar()" aria-label="关闭">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </button>
+      <div class="sidebar-search-wrap" onclick="location.href='/search'" role="link" aria-label="搜索">
+        <svg class="sidebar-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" class="sidebar-search" id="sidebarSearch" placeholder="搜索帖子和历史记录..." readonly tabindex="-1" aria-hidden="true">
+      </div>
     </div>
-    <div class="sidebar-search-wrap">
-      <svg class="sidebar-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-      <input type="text" class="sidebar-search" id="sidebarSearch" placeholder="搜索帖子和历史记录..." onfocus="location.href='/search'" readonly>
-    </div>
+    <div class="sidebar-list" id="sidebarList"></div>
+    <nav class="sidebar-nav">
+      <a href="/qa?new=1" onclick="closeSidebar()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+        <span>知识问答</span>
+      </a>
+    </nav>
   </div>
-  <div class="sidebar-list" id="sidebarList"></div>
-  <nav class="sidebar-nav">
-    <a href="/qa?new=1" onclick="closeSidebar()">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
-      <span>知识问答</span>
-    </a>
-  </nav>
 </div>
 <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
+<div class="page-wrapper">
 <!-- Nav bar -->
 <div class="nav-bar" id="navBar">
   <div class="nav-row1">
     <button class="hamburger" onclick="openSidebar()" aria-label="菜单">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
     </button>
-    <div class="nav-title" style="flex:1">推文收藏</div>
+    <div class="nav-title" style="flex:1">开卷有益</div>
     <button class="theme-btn" onclick="toggleTheme()" title="切换主题">
       <svg id="theme-icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
       <svg id="theme-icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
@@ -1416,8 +1554,13 @@ function renderIndexHtml(
         const pinLabel = a.pinned ? '取消置顶' : '置顶';
         const id = a.fileName.replace('.html', '');
         const avatarUrl = a.authorAvatar || ('https://unavatar.io/x/' + (a.authorHandle || ''));
+        const isWechat = a.sourceType === 'wechat' || (a.tweetUrl && /mp\.weixin\.qq\.com|weixin\.qq\.com/.test(a.tweetUrl));
+        const isWebpage = a.sourceType === 'webpage';
+        const statsHtml = (!isWechat && !isWebpage && (Number(a.replies) > 0 || Number(a.retweets) > 0 || Number(a.likes) > 0))
+          ? '<div class="article-stats"><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>' + (a.replies||0) + '</span><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>' + (a.retweets||0) + '</span><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>' + (a.likes||0) + '</span></div>'
+          : '';
         var swipeActions = '<div class="swipe-actions"><button class="swipe-btn pin" onclick="event.stopPropagation(); pinItem(\\'' + id + '\\', ' + (a.pinned ? 'false' : 'true') + ')">' + pinLabel + '</button><button class="swipe-btn read" onclick="event.stopPropagation(); ' + (a.unread ? 'markRead(\\'' + id + '\\')' : 'markUnread(\\'' + id + '\\')') + '">' + (a.unread ? '标为已读' : '标为未读') + '</button>' + (a.tweetUrl ? '<button class="swipe-btn source" onclick="event.stopPropagation(); window.open(\\'' + a.tweetUrl + '\\', \\'_blank\\')">原文</button>' : '') + '<button class="swipe-btn delete" onclick="event.stopPropagation(); deleteItem(\\'' + id + '\\')">删除</button></div>';
-        return '<li class="article-item' + (a.pinned ? ' pinned' : '') + '" id="item-' + id + '"><div class="swipe-wrap"><div class="item-row swipe-content"><a href="articles/' + a.fileName + '" class="article-link" onclick="markReadNoRender(\\'' + id + '\\')"><div class="article-title-wrap">' + a.title + pinnedBadge + '</div><div class="article-meta"><img src="' + avatarUrl + '" alt="" class="meta-avatar" loading="lazy" /><span class="meta-author">' + a.author + '</span><span class="meta-time">收藏于 ' + (a.savedDate || '').substring(5) + ' · 更新于 ' + a.tweetDate.substring(5) + '</span></div><div class="article-stats"><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>' + (a.replies||0) + '</span><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>' + (a.retweets||0) + '</span><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>' + (a.likes||0) + '</span></div></a><div class="item-actions">' + unreadDot + '<div class="more-wrap"><button class="more-btn" onclick="toggleMenu(event, \\'' + id + '\\')">⋯</button><div class="dropdown-menu" id="menu-' + id + '"><div class="dropdown-item" onclick="pinItem(\\'' + id + '\\', ' + (a.pinned ? 'false' : 'true') + ')">' + pinLabel + '</div><div class="dropdown-item" onclick="' + (a.unread ? 'markRead(\\'' + id + '\\')' : 'markUnread(\\'' + id + '\\')') + '">' + (a.unread ? '标为已读' : '标为未读') + '</div>' + (a.tweetUrl ? '<div class="dropdown-item" onclick="window.open(\\'' + a.tweetUrl + '\\', \\'_blank\\')">查看原文</div>' : '') + '<div class="dropdown-item delete" onclick="deleteItem(\\'' + id + '\\')">删除</div></div></div></div></div>' + swipeActions + '</div></li>';
+        return '<li class="article-item' + (a.pinned ? ' pinned' : '') + '" id="item-' + id + '"><div class="swipe-wrap"><div class="item-row swipe-content"><a href="articles/' + a.fileName + '" class="article-link" onclick="markReadNoRender(\\'' + id + '\\')"><div class="article-title-wrap">' + a.title + pinnedBadge + '</div><div class="article-meta"><img src="' + avatarUrl + '" alt="" class="meta-avatar" loading="lazy" /><span class="meta-author">' + a.author + '</span><span class="meta-time">收藏于 ' + (a.savedDate || '').substring(5) + ' · 更新于 ' + a.tweetDate.substring(5) + '</span></div>' + statsHtml + '</a><div class="item-actions">' + unreadDot + '<div class="more-wrap"><button class="more-btn" onclick="toggleMenu(event, \\'' + id + '\\')">⋯</button><div class="dropdown-menu" id="menu-' + id + '"><div class="dropdown-item" onclick="pinItem(\\'' + id + '\\', ' + (a.pinned ? 'false' : 'true') + ')">' + pinLabel + '</div><div class="dropdown-item" onclick="' + (a.unread ? 'markRead(\\'' + id + '\\')' : 'markUnread(\\'' + id + '\\')') + '">' + (a.unread ? '标为已读' : '标为未读') + '</div>' + (a.tweetUrl ? '<div class="dropdown-item" onclick="window.open(\\'' + a.tweetUrl + '\\', \\'_blank\\')">查看原文</div>' : '') + '<div class="dropdown-item delete" onclick="deleteItem(\\'' + id + '\\')">删除</div></div></div></div></div>' + swipeActions + '</div></li>';
       }).join('');
     }
 
@@ -1853,15 +1996,26 @@ function renderIndexHtml(
   else if(window.matchMedia('(prefers-color-scheme:dark)').matches) document.documentElement.setAttribute('data-theme','dark');
   updateThemeIcon();
 })();
+function _setThemeColorForSidebar(open) {
+  var metas = document.querySelectorAll('meta[name="theme-color"]');
+  var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  var openColor = isDark ? '#1a1a1a' : '#ffffff';
+  var closedColor = isDark ? '#0f0f0f' : '#f5f5f5';
+  for (var i = 0; i < metas.length; i++) {
+    metas[i].setAttribute('content', open ? openColor : closedColor);
+  }
+}
 function openSidebar() {
   document.getElementById('sidebar').classList.add('open');
   document.getElementById('sidebarOverlay').classList.add('show');
   document.body.classList.add('sidebar-open');
+  _setThemeColorForSidebar(true);
 }
 function closeSidebar() {
   document.getElementById('sidebar').classList.remove('open');
   document.getElementById('sidebarOverlay').classList.remove('show');
   document.body.classList.remove('sidebar-open');
+  _setThemeColorForSidebar(false);
   sidebarQuery = '';
   sidebarPostResults = [];
   var input = document.getElementById('sidebarSearch');
@@ -1995,13 +2149,29 @@ async function downloadAvatar(url: string, basePath: string): Promise<string | n
   }
 }
 
-async function downloadFile(url: string, destPath: string): Promise<void> {
+async function downloadFile(url: string, destPath: string, referer?: string): Promise<void> {
+  // Feishu/Lark CDN often requires browser-like UA + Referer, otherwise returns 403 HTML.
+  let ref = referer || '';
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (!ref && /(feishu|lark|bytedance|feishucdn|larksuitecdn)/i.test(host)) {
+      ref = 'https://www.feishu.cn/';
+    }
+  } catch { /* ignore */ }
+
+  const headers: Record<string, string> = {
+    'User-Agent':
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+  };
+  if (ref) headers.Referer = ref;
+
   const response = await axios.get(url, {
     responseType: 'stream',
     timeout: 30000,
     maxRedirects: 5,
     httpsAgent: getDownloadAgent(),
-    headers: { 'User-Agent': 'TweetArchive/1.0' },
+    headers,
   });
 
   // Only reject non-media content types (HTML, JSON, etc.)
@@ -2062,7 +2232,7 @@ export async function saveTweet(tweet: FetchedTweet): Promise<string> {
 
   // Download avatar: prefer original pbs.twimg.com URL (via proxy), fallback to unavatar
   if (tweet.author.avatar_url && !tweet.author.avatar_url.startsWith('../')) {
-    const platform = tweet.sourceType === 'wechat' ? 'wechat' : 'twitter';
+    const platform = tweet.sourceType === 'wechat' ? 'wechat' : tweet.sourceType === 'webpage' ? 'webpage' : 'twitter';
     const safeName = sanitizeFileName(tweet.author.name || tweet.author.screen_name);
     const avatarBaseName = `${platform}_${tweet.author.screen_name}_${safeName}`;
     const avatarBasePath = path.join(AVATARS_DIR, avatarBaseName);
@@ -2089,9 +2259,19 @@ export async function saveTweet(tweet: FetchedTweet): Promise<string> {
   const localVideoPaths: string[] = [...allVideoUrls];
 
   // Try to download images (best-effort via proxy); skip if already exists
+  // Feishu/Lark images: pass article URL as Referer so CDN allows the fetch.
+  const imgReferer = tweet.url || undefined;
   for (let i = 0; i < photos.length; i++) {
     const photo = photos[i];
-    const ext = path.extname(new URL(photo.url).pathname) || '.jpg';
+    let ext = '.jpg';
+    try {
+      const p = new URL(photo.url).pathname;
+      ext = path.extname(p) || '.jpg';
+      // Feishu CDN paths often have no extension
+      if (!ext || ext === '.' || ext.length > 5) ext = '.jpg';
+    } catch {
+      ext = '.jpg';
+    }
     const imgFileName = fileNameBase + '_img' + i + ext;
     const imgPath = path.join(IMAGES_DIR, imgFileName);
     if (fs.existsSync(imgPath) && fs.statSync(imgPath).size > 0) {
@@ -2099,7 +2279,13 @@ export async function saveTweet(tweet: FetchedTweet): Promise<string> {
       continue;
     }
     try {
-      await downloadFile(photo.url, imgPath);
+      await downloadFile(photo.url, imgPath, imgReferer);
+      // Detect real type if extension was wrong and file is tiny/empty error page
+      if (fs.existsSync(imgPath) && fs.statSync(imgPath).size < 200) {
+        // likely HTML error body; drop and keep remote URL fallback
+        fs.unlinkSync(imgPath);
+        throw new Error('Downloaded file too small (likely blocked)');
+      }
       localImagePaths[i] = '../images/' + imgFileName;
     } catch (err) {
       console.error(`[save] Failed to download image ${i}: ${photo.url} — ${err instanceof Error ? err.message : err}`);
@@ -2146,6 +2332,7 @@ export async function saveTweet(tweet: FetchedTweet): Promise<string> {
     tweetTimestamp: tweet.created_timestamp,
     savedTimestamp: Math.floor(now / 1000),
     contentKey: tweet.text.substring(0, 200),
+    sourceType: tweet.sourceType || 'twitter',
     pinned: existing ? existing.pinned : false,
     pinnedAt: existing ? existing.pinnedAt : undefined,
     unread: existing ? existing.unread : true,

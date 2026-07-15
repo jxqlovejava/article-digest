@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#f5f5f5" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0f0f0f" media="(prefers-color-scheme: dark)">
+  <link rel="icon" type="image/png" href="/favicon.png?v=3" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=3" />
+  <title>搜索</title>
+  <style>
+    :root {
+      --bg: #f5f5f5; --surface: #fff; --text: #1a1a1a;
+      --text-secondary: #888; --text-tertiary: #aaa;
+      --accent: #5a5a5a; --accent-bg: #f0f0f0;
+      --border: #eee; --shadow-sm: rgba(0,0,0,0.05);
+    }
+    [data-theme="dark"] {
+      --bg: #0f0f0f; --surface: #1a1a1a; --text: #e8e8e8;
+      --text-secondary: #b0b0b0; --text-tertiary: #888;
+      --accent: #b0b0b0; --accent-bg: #2a2a2a;
+      --border: #3a3a3a; --shadow-sm: rgba(0,0,0,0.3);
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg); color: var(--text); min-height: 100dvh;
+      -webkit-font-smoothing: antialiased; line-height: 1.7;
+      padding: env(safe-area-inset-top, 0) 16px 40px;
+      padding-bottom: calc(40px + env(safe-area-inset-bottom));
+    }
+    .container { max-width: 740px; margin: 0 auto; padding-top: 8px; }
+    .search-header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+    .search-row {
+      flex: 1; display: flex; gap: 0; align-items: center;
+      background: var(--surface); border-radius: 18px;
+      padding: 3px 5px 3px 12px;
+      box-shadow: 0 1px 6px var(--shadow-sm);
+    }
+    .search-input {
+      flex: 1; padding: 6px 0; border: none;
+      background: transparent; color: var(--text);
+      font-size: 15px; outline: none;
+      font-family: inherit; line-height: 1.35;
+    }
+    .search-input::placeholder { color: var(--text-tertiary); }
+    .search-submit {
+      flex-shrink: 0; border: none; background: var(--accent-bg);
+      color: var(--text); font-size: 14px; font-weight: 500;
+      font-family: inherit; padding: 7px 14px; border-radius: 14px;
+      cursor: pointer; -webkit-tap-highlight-color: transparent;
+      line-height: 1.2;
+    }
+    .search-submit:active { opacity: 0.7; }
+    .cancel-btn {
+      color: var(--text); font-size: 16px; text-decoration: none;
+      -webkit-tap-highlight-color: transparent; flex-shrink: 0;
+    }
+    .cancel-btn:active { opacity: 0.6; }
+    .results { list-style: none; }
+    .article-item {
+      background: var(--surface); border-radius: 16px; margin-bottom: 12px;
+      box-shadow: 0 1px 3px var(--shadow-sm);
+      transition: transform 0.2s ease, box-shadow 0.2s ease; overflow: hidden;
+    }
+    .article-item:hover { transform: translateY(-2px) scale(1.005); box-shadow: 0 8px 24px var(--shadow-md); }
+    .item-row { display: flex; align-items: flex-start; padding: 16px; }
+    .meta-avatar {
+      width: 18px; height: 18px; border-radius: 50%; object-fit: cover;
+      flex-shrink: 0; background: var(--border);
+    }
+    .article-link {
+      flex: 1; display: block; padding: 0;
+      text-decoration: none; color: inherit; min-width: 0;
+    }
+    .article-title-wrap {
+      font-size: 17px; font-weight: 700; color: var(--text);
+      margin-bottom: 6px; line-height: 1.5;
+    }
+    .article-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 13px; margin-bottom: 6px; }
+    .meta-author { color: var(--text); font-weight: 500; }
+    .meta-time { color: var(--text-secondary); }
+    .article-stats { display: flex; gap: 16px; font-size: 12px; color: var(--text-tertiary); }
+    .stat { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; color: var(--text-secondary); }
+    .stat svg { flex-shrink: 0; opacity: 0.7; }
+    .empty { text-align: center; padding: 20px; color: var(--text-secondary); }
+    .suggestions { margin-top: 0; }
+    .suggestion-item {
+      display: block; width: 100%; padding: 12px 16px; margin-bottom: 8px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 16px; color: var(--text); font-size: 15px;
+      text-align: left; cursor: pointer; font-family: inherit;
+      transition: border-color 0.2s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .suggestion-item:hover { border-color: var(--accent); }
+    .suggest-label { font-size: 14px; color: var(--text-secondary); margin-bottom: 8px; }
+    .suggest-refresh {
+      text-align: center; padding: 8px 0 16px; color: var(--text-tertiary);
+      font-size: 13px; cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .suggest-refresh:hover { color: var(--accent); }
+    .suggest-refresh:active { color: var(--text-secondary); }
+    .history-section { margin-bottom: 20px; }
+    .history-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 4px; padding: 0 4px;
+    }
+    .history-title { font-size: 14px; color: var(--text-secondary); }
+    .history-list { list-style: none; }
+    .history-item {
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px 4px; cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .history-item:active { opacity: 0.6; }
+    .history-icon {
+      width: 18px; height: 18px; color: var(--text-tertiary); flex-shrink: 0;
+    }
+    .history-text {
+      flex: 1; font-size: 16px; color: var(--text);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .history-delete {
+      width: 28px; height: 28px; border: none; border-radius: 50%;
+      background: transparent; color: var(--text-tertiary); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      -webkit-tap-highlight-color: transparent; flex-shrink: 0;
+    }
+    .history-delete:hover { color: var(--text); }
+    .history-delete:active { background: var(--border); }
+    .history-delete svg { width: 16px; height: 16px; }
+    .history-clear {
+      text-align: center; padding: 16px 0; color: var(--text-tertiary);
+      font-size: 14px; cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .history-clear:active { color: var(--text-secondary); }
+    .sidebar-btn {
+      position: fixed; top: max(12px, env(safe-area-inset-top)); left: 12px; z-index: 50;
+      width: 40px; height: 40px; border: none; border-radius: 50%;
+      background: var(--surface); color: var(--text); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 1px 3px var(--shadow-sm); font-size: 20px;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .sidebar { /* reused from index page */ }
+  </style>
+</head>
+<body>
+<div class="container">
+  <div class="search-header">
+    <div class="search-row">
+      <input type="text" class="search-input" id="searchInput" placeholder="搜索帖子和历史记录..."
+        autofocus onkeydown="handleSearchKey(event)" oninput="onSearchInput()">
+      <button type="button" class="search-submit" id="searchSubmit" onclick="confirmSearch()">搜索</button>
+    </div>
+    <a href="/" class="cancel-btn">取消</a>
+  </div>
+  <div class="history-section" id="historySection" style="display:none">
+    <div class="history-header">
+      <span class="history-title">最近搜索</span>
+    </div>
+    <ul class="history-list" id="historyList"></ul>
+    <div class="history-clear" id="historyClear" onclick="clearAllHistory()">清空全部搜索记录</div>
+  </div>
+  <div class="suggestions" id="suggestions"></div>
+  <ul class="results" id="results"></ul>
+</div>
+
+<script>
+var HISTORY_KEY = 'tweet_search_history';
+var MAX_HISTORY = 8;
+// 仅「确认搜索」写入最近搜索：点搜索按钮 / 回车 / 点历史或推荐词
+// 输入过程中不请求、不记历史
+var ICONS = {
+  comment: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>',
+  repost: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>',
+  like: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>'
+};
+
+function goBack() {
+  location.href = '/';
+}
+
+function handleSearchKey(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    confirmSearch();
+  }
+}
+
+function onSearchInput() {
+  toggleHistory();
+}
+
+/** 用户明确发起的搜索：写最近搜索 */
+function confirmSearch() {
+  doSearch({ recordHistory: true });
+}
+
+function escapeHtml(text) {
+  var div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function getHistory() {
+  try {
+    var raw = localStorage.getItem(HISTORY_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+function saveHistory(list) {
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, MAX_HISTORY))); } catch {}
+}
+
+function deleteHistory(q) {
+  saveHistory(getHistory().filter(function(item) { return item !== q; }));
+  renderHistory();
+  toggleHistory();
+}
+
+function clearAllHistory() {
+  saveHistory([]);
+  renderHistory();
+  toggleHistory();
+}
+
+function useHistory(q) {
+  document.getElementById('searchInput').value = q;
+  confirmSearch();
+}
+
+function renderHistory() {
+  var section = document.getElementById('historySection');
+  var listEl = document.getElementById('historyList');
+  var clearEl = document.getElementById('historyClear');
+  var list = getHistory();
+  if (!list.length) {
+    if (section) section.style.display = 'none';
+    return;
+  }
+  if (section) section.style.display = '';
+  if (listEl) {
+    listEl.innerHTML = list.map(function(q, i) {
+      return '<li class="history-item" data-idx="' + i + '">' +
+        '<svg class="history-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>' +
+        '<span class="history-text">' + escapeHtml(q) + '</span>' +
+        '<button class="history-delete" data-idx="' + i + '" aria-label="删除">' +
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+        '</button></li>';
+    }).join('');
+  }
+  if (clearEl) clearEl.style.display = list.length ? '' : 'none';
+}
+
+function toggleHistory() {
+  var q = document.getElementById('searchInput').value.trim();
+  var section = document.getElementById('historySection');
+  var sugs = document.getElementById('suggestions');
+  var results = document.getElementById('results');
+  if (!q) {
+    if (section) section.style.display = '';
+    if (sugs) sugs.style.display = '';
+    if (results) results.innerHTML = '';
+    renderHistory();
+  }
+}
+
+/**
+ * @param {{ recordHistory?: boolean }} opts
+ * recordHistory=true 才写入最近搜索（确认搜索）；避免输入过程中 debounce 误记
+ */
+async function doSearch(opts) {
+  opts = opts || {};
+  var recordHistory = !!opts.recordHistory;
+  var q = document.getElementById('searchInput').value.trim();
+  var results = document.getElementById('results');
+  var sugs = document.getElementById('suggestions');
+  var section = document.getElementById('historySection');
+  if (!q || q.length < 2) {
+    results.innerHTML = q ? '<div class="empty">请输入至少 2 个字</div>' : '';
+    if (sugs) sugs.style.display = '';
+    if (section) section.style.display = '';
+    renderHistory();
+    return;
+  }
+  if (sugs) sugs.style.display = 'none';
+  if (section) section.style.display = 'none';
+  results.innerHTML = '<div class="loading">搜索中...</div>';
+  try {
+    var res = await fetch('/api/search?q=' + encodeURIComponent(q));
+    if (!res.ok) throw new Error('search failed');
+    var data = await res.json();
+    // 仅确认搜索且请求成功后记录
+    if (recordHistory) addHistory(q);
+    if (section) section.style.display = 'none';
+    if (!data.results || data.results.length === 0) {
+      results.innerHTML = '<div class="empty">没有找到相关文章</div>';
+      return;
+    }
+    results.innerHTML = data.results.map(function(r) {
+      var title = r.title || r.fileName;
+      var avatarUrl = r.authorAvatar || ('https://unavatar.io/x/' + (r.authorHandle || ''));
+      var hasStats = Number(r.replies) > 0 || Number(r.retweets) > 0 || Number(r.likes) > 0;
+      var statsHtml = hasStats ? '<div class="article-stats">' +
+        '<span class="stat">' + ICONS.comment + '<span>' + (r.replies || 0) + '</span></span>' +
+        '<span class="stat">' + ICONS.repost + '<span>' + (r.retweets || 0) + '</span></span>' +
+        '<span class="stat">' + ICONS.like + '<span>' + (r.likes || 0) + '</span></span>' +
+        '</div>' : '';
+      return '<li class="article-item"><div class="item-row">' +
+        '<a class="article-link" href="/articles/' + r.fileName + '">' +
+        '<div class="article-title-wrap">' + title + '</div>' +
+        '<div class="article-meta">' +
+        '<img src="' + avatarUrl + '" alt="" class="meta-avatar" loading="lazy" />' +
+        '<span class="meta-author">' + (r.author || '') + '</span>' +
+        '<span class="meta-time">收藏于 ' + (r.savedDate || '').substring(5) + ' · 更新于 ' + (r.tweetDate || '').substring(5) + '</span>' +
+        '</div>' +
+        statsHtml +
+        '</a>' +
+        '</div></li>';
+    }).join('');
+  } catch(e) {
+    results.innerHTML = '<div class="empty">搜索失败，请重试</div>';
+  }
+}
+
+function addHistory(q) {
+  q = (q || '').trim();
+  if (!q || q.length < 2) return;
+  var list = getHistory();
+  var idx = list.indexOf(q);
+  if (idx > -1) list.splice(idx, 1);
+  list.unshift(q);
+  saveHistory(list);
+  renderHistory();
+}
+
+// Event delegation for history list
+document.getElementById('historyList').addEventListener('click', function(e) {
+  var del = e.target.closest('.history-delete');
+  if (del) {
+    var idx = parseInt(del.getAttribute('data-idx'), 10);
+    var list = getHistory();
+    if (idx >= 0 && idx < list.length) deleteHistory(list[idx]);
+    return;
+  }
+  var item = e.target.closest('.history-item');
+  if (item) {
+    var idx = parseInt(item.getAttribute('data-idx'), 10);
+    var list = getHistory();
+    if (idx >= 0 && idx < list.length) useHistory(list[idx]);
+  }
+});
+
+// Load keyword suggestions
+async function loadSuggestions() {
+  try {
+    var res = await fetch('/api/search/keywords');
+    if (!res.ok) return;
+    var data = await res.json();
+    if (!data.keywords || !data.keywords.length) return;
+    var container = document.getElementById('suggestions');
+    if (!container) return;
+    container.innerHTML = '<div class="suggest-label">推荐搜索</div>' +
+      '<ul class="history-list">' +
+      data.keywords.map(function(k) {
+        return '<li class="history-item" onclick="document.getElementById(\'searchInput\').value=\'' + k.replace(/'/g,"\\\\'") + '\';confirmSearch()">' +
+          '<svg class="history-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>' +
+          '<span class="history-text">' + escapeHtml(k) + '</span>' +
+          '</li>';
+      }).join('') +
+      '</ul>' +
+      '<div class="suggest-refresh" onclick="loadSuggestions()">换一换</div>';
+  } catch {}
+}
+loadSuggestions();
+
+// Initial render
+renderHistory();
+toggleHistory();
+
+// Theme
+(function() {
+  var t = localStorage.getItem('theme');
+  if (t) document.documentElement.setAttribute('data-theme', t);
+  else if (window.matchMedia('(prefers-color-scheme:dark)').matches) document.documentElement.setAttribute('data-theme', 'dark');
+})();
+</script>
+</body>
+</html>
