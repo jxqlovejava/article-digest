@@ -1,0 +1,1871 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <link rel="icon" type="image/png" href="/favicon.png?v=3" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=3" />
+  <title>知识问答</title>
+  <style>
+    :root {
+      --bg: #f5f5f5; --surface: #fff; --text: #1a1a1a;
+      --text-secondary: #888; --text-tertiary: #aaa;
+      --accent: #5a5a5a; --accent-bg: #f0f0f0;
+      --border: #eee; --shadow-sm: rgba(0,0,0,0.05); --shadow-md: rgba(0,0,0,0.1);
+      --bubble-user: #e9eef3; --bubble-user-text: #1a1a1a;
+      --bubble-ai: #fff; --bubble-ai-text: #1a1a1a;
+      --code-bg: #f2f2f2; --code-color: #d63384;
+      --danger: #fa5151; --overlay: rgba(0,0,0,0.3);
+    }
+    [data-theme="dark"] {
+      --bg: #0f0f0f; --surface: #1a1a1a; --text: #e8e8e8;
+      --text-secondary: #b0b0b0; --text-tertiary: #888;
+      --accent: #b0b0b0; --accent-bg: #2a2a2a;
+      --border: #3a3a3a; --shadow-sm: rgba(0,0,0,0.3); --shadow-md: rgba(0,0,0,0.4);
+      --bubble-user: #1c2430; --bubble-user-text: #e8e8e8;
+      --bubble-ai: #1a1a1a; --bubble-ai-text: #e8e8e8;
+      --code-bg: #2d2d2d; --code-color: #ff8fab;
+      --danger: #ff6b6b; --overlay: rgba(0,0,0,0.6);
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: var(--bg); color: var(--text);
+      -webkit-font-smoothing: antialiased; transition: background 0.3s ease, color 0.3s ease;
+      line-height: 1.7;
+      display: flex; flex-direction: column;
+      padding-top: env(safe-area-inset-top, 0);
+    }
+
+    /* ---- Nav bar (fixed overlay, auto-hide on scroll) ---- */
+    .nav-bar {
+      position: fixed; top: env(safe-area-inset-top, 0); left: 0; right: 0; z-index: 60;
+      display: flex; align-items: center; gap: 4px;
+      height: 48px; padding: 0 12px;
+      background: var(--bg);
+      transition: transform 0.3s ease, opacity 0.3s ease;
+    }
+    .nav-bar.hidden { transform: translateY(calc(-100% - env(safe-area-inset-top, 0px))); opacity: 0; pointer-events: none; }
+    .nav-bar .nav-title { font-size: 17px; font-weight: 600; color: var(--text); }
+    .nav-bar .nav-spacer { width: 36px; flex-shrink: 0; }
+    .icon-btn {
+      width: 36px; height: 36px; border: none; border-radius: 50%;
+      background: var(--surface); color: var(--text-secondary); cursor: pointer;
+      display: flex; align-items: center; justify-content: center; transition: all 0.2s;
+      box-shadow: 0 1px 4px var(--shadow-sm);
+      -webkit-tap-highlight-color: transparent;
+    }
+    .icon-btn:hover { color: var(--text); }
+    .icon-btn svg { width: 18px; height: 18px; }
+
+    /* ---- Chat area (fills all available space) ---- */
+    .chat-area {
+      flex: 1; overflow-y: auto; overflow-x: hidden;
+      -webkit-overflow-scrolling: touch;
+      /* Keep padding fixed even when nav hides — changing it mid-stream causes jitter */
+      padding: 56px 0 0; /* space for nav bar above */
+      max-width: 740px; width: 100%; margin: 0 auto;
+      overflow-anchor: none; /* we pin scroll manually while streaming */
+    }
+    .messages-inner {
+      padding: 0 16px 8px; display: flex; flex-direction: column; gap: 12px;
+      min-height: 100%;
+    }
+    /* Anchor growth to last message so browser doesn't fight our stick-to-bottom */
+    .messages-inner > .msg:last-child,
+    .messages-inner > .thinking:last-child {
+      overflow-anchor: auto;
+    }
+
+    .messages-card { display: none; } /* replaced by .chat-area */
+    .welcome {
+      text-align: center; padding: 40px 16px; color: var(--text-secondary);
+    }
+    .welcome h3 { font-size: 18px; margin-bottom: 8px; color: var(--text); }
+    .welcome p { font-size: 14px; margin-bottom: 16px; line-height: 1.6; }
+    .suggestions { display: flex; flex-direction: column; gap: 8px; max-width: 320px; margin: 0 auto; }
+    .suggestion-btn {
+      padding: 10px 16px; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 12px; color: var(--text); font-size: 14px; cursor: pointer;
+      text-align: left; transition: border-color 0.2s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .suggestion-btn:hover { border-color: var(--accent); }
+
+    /* ---- Selection mode ---- */
+    /* 全程禁系统文本选中：长按只出菜单，不整页/整段蓝选（复制走菜单取全文） */
+    .msg,
+    .msg .bubble,
+    .chat-area,
+    .messages-inner {
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+    }
+    .select-mode .msg { cursor: pointer; }
+    .msg .select-check {
+      display: none; position: absolute; left: -28px; top: 50%; transform: translateY(-50%);
+      width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--text-tertiary);
+      background: var(--surface); z-index: 2;
+      align-items: center; justify-content: center;
+      transition: border-color 0.15s, background 0.15s;
+      pointer-events: none; /* 点气泡即可勾选，避免点到小圆圈丢事件 */
+    }
+    .select-mode .msg { margin-left: 34px; }
+    .select-mode .msg .select-check { display: flex; }
+    .select-mode .msg.selected .select-check {
+      border-color: var(--accent); background: var(--accent);
+    }
+    .select-mode .msg.selected .select-check::after {
+      content: '✓'; color: #fff; font-size: 12px; font-weight: 700;
+    }
+    .select-mode .msg.selected .bubble { opacity: 0.7; }
+    /* Action bar */
+    .select-action-bar {
+      display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 50;
+      background: var(--surface); border-top: 1px solid var(--border);
+      padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+      justify-content: center; gap: 24px; align-items: center;
+    }
+    .select-action-bar.show { display: flex; }
+    .select-action-bar button {
+      padding: 8px 24px; border: none; border-radius: 8px; font-size: 15px; cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .select-action-bar .cancel-btn { background: transparent; color: var(--text-secondary); }
+    .select-action-bar .delete-btn { background: var(--danger); color: #fff; font-weight: 600; }
+    .select-action-bar .count-text { color: var(--text-secondary); font-size: 14px; }
+    /* Context menu popup — WeChat-style dark bubble */
+    .ctx-overlay {
+      position: fixed; inset: 0; z-index: 199; background: transparent;
+    }
+    .ctx-menu {
+      position: fixed; z-index: 200;
+      background: #333; border-radius: 10px; color: #fff;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+      overflow: hidden; min-width: 148px; animation: ctxFadeIn 0.15s ease;
+      font-size: 15px;
+    }
+    @keyframes ctxFadeIn { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: scale(1); } }
+    .ctx-item {
+      padding: 13px 24px; cursor: pointer; text-align: center;
+      -webkit-tap-highlight-color: transparent;
+      transition: background 0.1s; white-space: nowrap;
+    }
+    .ctx-item:active { background: rgba(255,255,255,0.1); }
+    .ctx-divider { height: 1px; background: rgba(255,255,255,0.12); }
+    .ctx-delete { color: #ff6b6b; }
+
+    /* Messages */
+    .msg { display: flex; flex-direction: column; max-width: 85%; animation: fadeIn 0.2s ease; position: relative; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+    .msg.user { align-self: flex-end; }
+    .msg.ai { align-self: flex-start; }
+    .msg .bubble {
+      padding: 10px 14px; border-radius: 16px; font-size: 15px;
+      line-height: 1.6; word-break: break-word;
+    }
+    .msg.user .bubble {
+      background: var(--bubble-user); color: var(--bubble-user-text);
+      border-bottom-right-radius: 4px;
+    }
+    .msg.ai .bubble {
+      background: var(--bubble-ai); color: var(--bubble-ai-text);
+      border-bottom-left-radius: 4px;
+      box-shadow: 0 1px 3px var(--shadow-sm);
+      /* limit layout thrash while stream text grows */
+      contain: layout style;
+    }
+    /* 无可见内容时不显示空气泡（首字前不应挂框） */
+    .msg.ai .bubble:empty {
+      display: none;
+      padding: 0;
+      box-shadow: none;
+    }
+    .msg.ai .bubble h3 { font-size: 1.1em; font-weight: 700; margin: 12px 0 6px; }
+    .msg.ai .bubble h4 { font-size: 1em; font-weight: 600; margin: 10px 0 4px; }
+    .msg.ai .bubble h5 { font-size: 0.95em; font-weight: 600; margin: 8px 0 4px; }
+    .msg.ai .bubble p { margin-bottom: 8px; }
+    .msg.ai .bubble p:last-child { margin-bottom: 0; }
+    .msg.ai .bubble ul, .msg.ai .bubble ol { margin: 8px 0; padding-left: 1.5em; }
+    .msg.ai .bubble ul { list-style-type: disc; }
+    .msg.ai .bubble ol { list-style-type: decimal; }
+    .msg.ai .bubble li { margin-bottom: 4px; }
+    .msg.ai .bubble li > ul, .msg.ai .bubble li > ol { margin: 4px 0; }
+    .msg.ai .bubble strong { font-weight: 600; }
+    .msg.ai .bubble pre { background: var(--code-bg); padding: 10px 14px; border-radius: 8px; overflow-x: auto; margin: 8px 0; font-size: 13px; }
+    .msg.ai .bubble pre code { background: none; padding: 0; }
+    .msg.ai .bubble a { color: var(--accent); text-decoration: underline; }
+    .msg.ai .bubble code {
+      background: var(--code-bg); color: var(--code-color);
+      padding: 1px 4px; border-radius: 3px; font-size: 13px;
+    }
+    .sources-toggle {
+      display: flex; align-items: center; gap: 4px; margin-top: 6px;
+      padding: 4px 0; color: var(--text-secondary); font-size: 12px;
+      cursor: pointer; background: none; border: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .sources-toggle:hover { color: var(--accent); }
+    .sources-list {
+      display: none; margin-top: 4px; padding: 8px 12px;
+      background: var(--bg); border-radius: 8px; font-size: 13px;
+    }
+    .sources-list.open { display: block; }
+    .source-item {
+      display: block; padding: 6px 0; color: var(--accent);
+      text-decoration: none; border-bottom: 1px solid var(--border);
+    }
+    .source-item:last-child { border-bottom: none; }
+    .source-item:hover { text-decoration: underline; }
+    .source-opinion { color: var(--text-secondary); font-size: 12px; margin-left: 4px; }
+    .source-opinion::before { content: '"'; }
+    .source-opinion::after { content: '"'; }
+
+    /* Thinking */
+    .thinking { align-self: flex-start; padding: 12px 16px; }
+    .thinking-dots { display: flex; gap: 4px; }
+    .thinking-dots span {
+      width: 6px; height: 6px; border-radius: 50%; background: var(--text-tertiary);
+      animation: bounce 1.4s infinite ease-in-out;
+    }
+    .thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce { 0%,80%,100% { transform: scale(0.6); } 40% { transform: scale(1); } }
+
+    /* ---- Input area (pinned to bottom) ---- */
+    .input-area {
+      flex-shrink: 0; max-width: 740px; width: 100%; margin: 0 auto;
+      padding: 8px 16px;
+      padding-bottom: env(safe-area-inset-bottom, 0);
+      background: linear-gradient(to top, var(--bg) 70%, transparent);
+    }
+    .input-row {
+      display: flex; gap: 8px; align-items: flex-end;
+      background: var(--surface); border-radius: 24px;
+      padding: 6px 6px 6px 16px;
+      box-shadow: 0 1px 6px var(--shadow-sm);
+    }
+    .input-field {
+      flex: 1; padding: 10px 0; border: none;
+      background: transparent; color: var(--text);
+      font-size: 16px; outline: none; resize: none; max-height: 120px;
+      font-family: inherit; line-height: 1.4;
+    }
+    .input-field::placeholder { color: var(--text-tertiary); }
+    .send-btn {
+      width: 36px; height: 36px; border: none; border-radius: 50%;
+      background: var(--accent); color: #fff; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; font-size: 18px; transition: opacity 0.2s, transform 0.15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .send-btn:disabled { opacity: 0.3; cursor: default; }
+    .send-btn:not(:disabled):active { transform: scale(0.9); }
+    .error-msg {
+      align-self: center; color: var(--danger); font-size: 13px;
+      padding: 8px 16px; background: var(--bg); border-radius: 8px;
+    }
+    .error-msg button {
+      background: none; border: none; color: var(--accent);
+      cursor: pointer; font-size: 13px; margin-left: 8px;
+    }
+
+    /* ---- Sidebar ---- */
+    .sidebar {
+      position: fixed; top: -2px; left: 0; bottom: -2px; width: 280px;
+      max-width: 85vw; background: var(--bg); z-index: 100;
+      display: flex; flex-direction: column;
+      transform: translate3d(-100%, 0, 0); transition: transform 0.25s ease;
+      will-change: transform;
+      box-shadow: 2px 0 16px var(--shadow-sm);
+      padding-bottom: env(safe-area-inset-bottom, 0);
+    }
+    .sidebar.open { transform: translate3d(0, 0, 0); }
+    .sidebar-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 99;
+      opacity: 0; pointer-events: none; transition: opacity 0.25s ease;
+    }
+    .sidebar-overlay.show { opacity: 1; pointer-events: auto; }
+    .sidebar-header {
+      display: flex; flex-direction: column; gap: 12px;
+      padding: env(safe-area-inset-top, 0) 16px 16px;
+      flex-shrink: 0;
+      background: var(--bg);
+    }
+    .sidebar-header-top {
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .sidebar-header h3 { font-size: 18px; font-weight: 700; }
+    .sidebar-search-wrap {
+      position: relative;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .sidebar-search {
+      width: 100%; padding: 8px 12px 8px 32px;
+      border: 1px solid var(--border); border-radius: 10px;
+      background: #fafafa; color: var(--text);
+      font-size: 14px; outline: none; font-family: inherit;
+      cursor: pointer;
+      pointer-events: none;
+    }
+    [data-theme="dark"] .sidebar-search { background: #242424; }
+    .sidebar-search::placeholder { color: var(--text-tertiary); }
+    .sidebar-search:focus { border-color: var(--border); outline: none; }
+    .sidebar-search-icon {
+      position: absolute; left: 10px; top: 50%;
+      transform: translateY(-50%);
+      width: 16px; height: 16px; color: var(--text-tertiary);
+      pointer-events: none;
+    }
+    .search-segment {
+      padding: 10px 16px; color: var(--text-secondary); font-size: 12px;
+      text-transform: uppercase; letter-spacing: 0.5px;
+      border-bottom: 1px solid var(--border); background: var(--surface);
+    }
+    .search-posts-btn {
+      display: flex; align-items: center; gap: 10px;
+      padding: 14px 16px; border-bottom: 1px solid var(--border);
+      cursor: pointer; transition: background 0.15s;
+      color: var(--text); font-size: 14px;
+    }
+    .search-posts-btn:hover, .search-posts-btn:active { background: var(--bg); }
+    .search-posts-btn svg { flex-shrink: 0; color: var(--accent); }
+    .post-result-item {
+      display: block; padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      text-decoration: none; color: inherit;
+      transition: background 0.15s;
+    }
+    .post-result-item:hover, .post-result-item:active { background: var(--bg); }
+    .post-result-title { font-size: 14px; font-weight: 600; margin-bottom: 2px; color: var(--text); }
+    .post-result-meta { font-size: 12px; color: var(--text-secondary); }
+    .post-result-snippet {
+      font-size: 13px; color: var(--text-secondary); margin-top: 4px;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .post-result-snippet em { color: var(--accent); font-style: normal; font-weight: 600; }
+    .sidebar-list { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+    .sidebar-item {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      gap: 8px;
+      padding: 12px 12px 12px 16px; border-bottom: 1px solid var(--border);
+      cursor: pointer; transition: background 0.15s;
+      -webkit-tap-highlight-color: transparent;
+      min-width: 0;
+    }
+    .sidebar-item:hover, .sidebar-item:active { background: var(--bg); }
+    .sidebar-item.active { background: var(--accent-bg); }
+    .sidebar-item .conv-main {
+      flex: 1;
+      min-width: 0; /* allow clamp inside flex child */
+      overflow: hidden;
+    }
+    /* 两行展示，比单行 … 更易读；仍过长才在第二行末省略 */
+    .sidebar-item .conv-title {
+      font-size: 14px; line-height: 1.4; color: var(--text);
+      max-width: 100%;
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
+      overflow: hidden;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      white-space: normal;
+    }
+    .sidebar-item .conv-time { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
+    .sidebar-item .conv-del {
+      width: 28px; height: 28px; border: none; border-radius: 50%;
+      background: transparent; color: var(--text-tertiary); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      margin-top: 2px; /* align with first title line */
+      -webkit-tap-highlight-color: transparent;
+    }
+    .sidebar-item .conv-del:hover { color: var(--danger); }
+    .sidebar-item .conv-del svg { width: 16px; height: 16px; }
+    .sidebar-new-btn {
+      margin: 12px 16px; padding: 10px; border: 1px dashed var(--border);
+      border-radius: 10px; background: transparent; color: var(--accent);
+      font-size: 14px; cursor: pointer; text-align: center;
+      -webkit-tap-highlight-color: transparent; flex-shrink: 0;
+    }
+    .sidebar-new-btn:hover { background: var(--accent-bg); }
+    .sidebar-empty {
+      padding: 40px 16px; text-align: center; color: var(--text-tertiary); font-size: 14px;
+    }
+
+    /* Sidebar nav links */
+    .sidebar-nav-links {
+      padding: 8px 0; flex-shrink: 0;
+    }
+    .sidebar-nav-links a {
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px 16px; text-decoration: none; color: var(--text);
+      font-size: 15px; transition: background 0.15s;
+    }
+    .sidebar-nav-links a svg {
+      width: 18px; height: 18px; flex-shrink: 0; color: var(--text-secondary);
+    }
+    .sidebar-nav-links a.active svg { color: var(--accent); }
+
+    @media (max-width: 480px) {
+      .chat-area { padding: 52px 0 0; }
+      .messages-inner { padding: 0 12px 8px; }
+      .msg { max-width: 90%; }
+      .input-area { padding: 6px 12px; }
+      .nav-bar { padding: 0 12px; }
+    }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .input-field:focus-visible { outline: none; }
+  </style>
+</head>
+<body>
+<!-- Sidebar -->
+<div class="sidebar" id="sidebar">
+  <div class="sidebar-header">
+    <div class="sidebar-header-top">
+      <h3>问答历史</h3>
+      <button class="icon-btn" onclick="closeSidebar()" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="sidebar-search-wrap" onclick="location.href='/search'" role="link" aria-label="搜索">
+      <svg class="sidebar-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input type="text" class="sidebar-search" id="sidebarSearch" placeholder="搜索帖子和历史记录..." readonly tabindex="-1" aria-hidden="true">
+    </div>
+  </div>
+  <div class="sidebar-list" id="sidebarList"></div>
+  <button class="sidebar-new-btn" onclick="newConversation()">+ 新建对话</button>
+  <div class="sidebar-nav-links">
+    <a href="/qa?new=1" class="active">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+      <span>知识问答</span>
+    </a>
+  </div>
+</div>
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
+
+<!-- Nav bar (fixed overlay) -->
+<div class="nav-bar" id="navBar">
+  <a href="/" class="icon-btn" title="返回" aria-label="返回" style="text-decoration:none" onclick="history.length>1?history.back():null;return false">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12H6"/><path d="M12 5l-7 7 7 7"/></svg>
+  </a>
+  <button class="icon-btn" onclick="toggleSidebar()" title="历史对话" aria-label="历史对话">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+  </button>
+  <span class="nav-title">知识问答</span>
+  <span class="nav-spacer"></span>
+</div>
+
+<!-- Chat area -->
+<div class="chat-area" id="chatArea">
+  <div class="messages-inner" id="messages">
+    <div class="welcome" id="welcome">
+      <h3>你好，我是你的知识伙伴 🤖</h3>
+      <p>基于你收藏的所有文章，你可以问我任何问题。<br>我会跨文章整合信息，给出有据可查的答案。</p>
+      <div class="suggestions" id="suggestions">
+        <div class="suggestions-loading" style="color:var(--text-secondary);font-size:13px;padding:8px 0">正在准备推荐问题…</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Input area -->
+<div class="input-area">
+  <div class="input-row">
+    <textarea class="input-field" id="questionInput" rows="1" placeholder="输入你的问题..." onkeydown="handleKeyDown(event)"></textarea>
+    <button class="send-btn" id="sendBtn" onclick="sendQuestion()" aria-label="发送">→</button>
+  </div>
+</div>
+
+<!-- Select action bar -->
+<div class="select-action-bar" id="selectActionBar">
+  <span class="count-text" id="selectCount">已选 0 条</span>
+  <button class="cancel-btn" onclick="copySelected()" style="color:var(--accent);font-weight:600">复制</button>
+  <button class="delete-btn" onclick="deleteSelected()">删除</button>
+  <button class="cancel-btn" onclick="exitSelectMode()">取消</button>
+</div>
+
+
+<script>
+// --- Global state ---
+var CONV_KEY = 'qa_conversations';
+var CONV_BACKUP_KEY = 'qa_conversations_backup';
+var ACTIVE_KEY = 'qa_active_conv';
+var SIDEBAR_KEY = 'qa_sidebar_collapsed';
+var MAX_CONVS = 50;
+var conversations = {};
+var activeId = '';
+var isThinking = false;
+var selectMode = false;
+var selectedSet = {};
+var longPressTimer = null;
+/** 菜单点「选择/删除」后屏蔽短暂 ghost click，避免立刻反选/退出 */
+var selectClickGuardUntil = 0;
+function armSelectClickGuard(ms) {
+  selectClickGuardUntil = Date.now() + (ms || 500);
+}
+function selectClickGuarded() {
+  return Date.now() < selectClickGuardUntil;
+}
+var touchStartIndex = -1;
+var _saveTimer = 0;
+var draftContextArticle = '';
+// Must be declared BEFORE init IIFE: loadSuggestions is async and compares
+// __suggestionsLoadSeq after await. A later `var __suggestionsLoadSeq = 0`
+// would reset the counter mid-flight and drop the response forever.
+var __suggestedQuestions = [];
+var __suggestionsLoadSeq = 0;
+
+function loadConversations() {
+  try {
+    var raw = localStorage.getItem(CONV_KEY) || localStorage.getItem(CONV_BACKUP_KEY) || '{}';
+    return JSON.parse(raw);
+  } catch {
+    try {
+      return JSON.parse(localStorage.getItem(CONV_BACKUP_KEY) || '{}');
+    } catch {
+      return {};
+    }
+  }
+}
+function saveConversations(convs) {
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(function() {
+    _doSave(convs);
+  }, 300);
+}
+function _doSave(convs) {
+  try {
+    Object.keys(convs).forEach(function(k) {
+      if (!convs[k].messages || convs[k].messages.length === 0) delete convs[k];
+    });
+    var ids = Object.keys(convs).sort(function(a, b) {
+      return (convs[b].updatedAt || 0) - (convs[a].updatedAt || 0);
+    });
+    if (ids.length > MAX_CONVS) {
+      var pruned = {};
+      ids.slice(0, MAX_CONVS).forEach(function(id) { pruned[id] = convs[id]; });
+      convs = pruned;
+    }
+    var serialized = JSON.stringify(convs);
+    localStorage.setItem(CONV_BACKUP_KEY, serialized);
+    localStorage.setItem(CONV_KEY, serialized);
+  } catch {}
+}
+function getActiveId() {
+  return localStorage.getItem(ACTIVE_KEY) || '';
+}
+function setActiveId(id) {
+  localStorage.setItem(ACTIVE_KEY, id);
+}
+
+var sidebarQuery, sidebarPostResults, SIDEBAR_PAGE_SIZE, sidebarRenderCount, sidebarSearchTimer;
+
+(function() {
+  conversations = loadConversations();
+  activeId = getActiveId();
+  sidebarQuery = '';
+  sidebarPostResults = [];
+  SIDEBAR_PAGE_SIZE = 20;
+  sidebarRenderCount = SIDEBAR_PAGE_SIZE;
+
+  var params = new URLSearchParams(window.location.search);
+  var ctxParam = params.get('context');
+  var startNew = params.get('new') === '1';
+
+  if (startNew) {
+    // 仅创建一个临时草稿会话，不写入 localStorage；等用户真正发问再存。
+    draftContextArticle = ctxParam || '';
+    activeId = '';
+    setActiveId('');
+    history.replaceState(null, '', window.location.pathname);
+  } else {
+    if (!activeId || !conversations[activeId]) {
+      var ids = Object.keys(conversations).sort(function(a, b) {
+        return (conversations[b].updatedAt || 0) - (conversations[a].updatedAt || 0);
+      });
+      if (ids.length > 0) {
+        activeId = ids[0];
+      } else {
+        activeId = 'conv-' + Date.now();
+        conversations[activeId] = {
+          id: activeId, title: '', messages: [],
+          createdAt: Date.now(), updatedAt: Date.now()
+        };
+        saveConversations(conversations);
+      }
+      setActiveId(activeId);
+    }
+    if (!conversations[activeId]) {
+      conversations[activeId] = {
+        id: activeId, title: '', messages: [],
+        createdAt: Date.now(), updatedAt: Date.now()
+      };
+      saveConversations(conversations);
+    }
+  }
+
+  var t = localStorage.getItem('theme');
+  if (t) document.documentElement.setAttribute('data-theme', t);
+  else if (window.matchMedia('(prefers-color-scheme:dark)').matches) document.documentElement.setAttribute('data-theme', 'dark');
+  updateThemeIcons();
+
+  // renderMessages first (rebuilds #suggestions when welcome); it calls loadSuggestions itself
+  try { renderMessages(); } catch (err) {}
+  try { renderSidebar(); } catch (err) {}
+
+  // Flush debounced save on page close so no data is lost
+  window.addEventListener('beforeunload', function() {
+    _doSave(conversations);
+  });
+
+  // Lazy-load more conversations when scrolling to bottom
+  (function() {
+    var list = document.getElementById('sidebarList');
+    if (!list) return;
+    list.addEventListener('scroll', function() {
+      if (list.scrollTop + list.clientHeight >= list.scrollHeight - 80) {
+        var total = Object.keys(conversations).length;
+        if (sidebarRenderCount < total) {
+          loadMoreSidebar();
+        }
+      }
+    }, { passive: true });
+  })();
+})();
+
+// ---- Sidebar ----
+var sidebarTouchStartX = 0;
+function openSidebar() {
+  document.getElementById('sidebar').classList.add('open');
+  document.getElementById('sidebarOverlay').classList.add('show');
+  document.body.classList.add('sidebar-open');
+}
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebarOverlay').classList.remove('show');
+  document.body.classList.remove('sidebar-open');
+  localStorage.setItem(SIDEBAR_KEY, '1');
+  if (sidebarQuery || sidebarPostResults.length > 0) {
+    sidebarQuery = '';
+    sidebarPostResults = [];
+    var input = document.getElementById('sidebarSearch');
+    if (input) input.value = '';
+    renderSidebar();
+  }
+}
+function toggleSidebar() {
+  var s = document.getElementById('sidebar');
+  s.classList.contains('open') ? closeSidebar() : openSidebar();
+}
+// Swipe-left to close sidebar
+(function() {
+  var sb = document.getElementById('sidebar');
+  sb.addEventListener('touchstart', function(e) {
+    sidebarTouchStartX = e.touches[0].clientX;
+  }, { passive: true });
+  sb.addEventListener('touchend', function(e) {
+    var dx = (e.changedTouches[0] || e.touches[0]).clientX - sidebarTouchStartX;
+    if (dx < -50) closeSidebar();
+  });
+})();
+sidebarQuery = '';
+sidebarPostResults = [];
+SIDEBAR_PAGE_SIZE = 20;
+sidebarRenderCount = SIDEBAR_PAGE_SIZE;
+sidebarSearchTimer = null;
+
+function handleSidebarSearch(value) {
+  sidebarQuery = (value || '').trim();
+  sidebarPostResults = [];
+  sidebarRenderCount = SIDEBAR_PAGE_SIZE;
+  clearTimeout(sidebarSearchTimer);
+  sidebarSearchTimer = setTimeout(function() {
+    renderSidebar();
+  }, 200);
+}
+
+function handleSidebarSearchKey(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    clearTimeout(sidebarSearchTimer);
+    searchPostsFromSidebar();
+  }
+}
+
+function loadMoreSidebar() {
+  sidebarRenderCount += SIDEBAR_PAGE_SIZE;
+  renderSidebar();
+}
+
+async function searchPostsFromSidebar() {
+  if (!sidebarQuery || sidebarQuery.length < 2) return;
+  var list = document.getElementById('sidebarList');
+  if (list) list.innerHTML = '<div class="sidebar-empty">搜索中...</div>';
+  try {
+    var res = await fetch('/api/search?q=' + encodeURIComponent(sidebarQuery));
+    var data = await res.json();
+    sidebarPostResults = (data && data.results) || [];
+  } catch (err) {
+    sidebarPostResults = [];
+  }
+  renderSidebar();
+}
+
+function renderSidebar() {
+  var list = document.getElementById('sidebarList');
+  if (!list) return;
+  try {
+    var ids = Object.keys(conversations).sort(function(a, b) {
+      return ((conversations[b] && conversations[b].updatedAt) || 0) - ((conversations[a] && conversations[a].updatedAt) || 0);
+    });
+
+    var filteredIds = ids;
+    if (sidebarQuery) {
+      var q = sidebarQuery.toLowerCase();
+      filteredIds = ids.filter(function(id) {
+        var c = conversations[id] || {};
+        var title = (c.title || '').toLowerCase();
+        if (title.indexOf(q) !== -1) return true;
+        var msgs = c.messages || [];
+        var limit = Math.min(msgs.length, 5);
+        for (var i = msgs.length - 1, count = 0; i >= 0 && count < limit; i--, count++) {
+          if ((msgs[i] && typeof msgs[i].content === 'string' ? msgs[i].content : '').toLowerCase().indexOf(q) !== -1) return true;
+        }
+        return false;
+      });
+    }
+
+    var visibleIds = filteredIds.slice(0, sidebarRenderCount);
+    var hasMore = filteredIds.length > sidebarRenderCount;
+
+    var html = '';
+
+    if (sidebarQuery && sidebarPostResults.length === 0) {
+      html += '<div class="search-posts-btn" onclick="searchPostsFromSidebar()">' +
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>' +
+        '<span>在帖子中搜索「' + escapeHtml(sidebarQuery) + '」</span>' +
+        '</div>';
+    }
+
+    if (filteredIds.length > 0) {
+      if (sidebarQuery) html += '<div class="search-segment">问答历史</div>';
+      html += visibleIds.map(function(id) { return buildSidebarItemHtml(id); }).join('');
+      if (hasMore) {
+        html += '<div class="sidebar-load-more" onclick="loadMoreSidebar()" style="padding:12px 16px;text-align:center;color:var(--text-secondary);font-size:13px;cursor:pointer;border-bottom:1px solid var(--border);">加载更多 (' + (filteredIds.length - sidebarRenderCount) + ')</div>';
+      }
+    }
+
+    if (sidebarPostResults.length > 0) {
+      html += '<div class="search-segment">帖子</div>';
+      html += sidebarPostResults.map(function(r) {
+        var title = (r.title || r.fileName || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        var terms = sidebarQuery.split(/\s+/).filter(Boolean);
+        terms.forEach(function(t) {
+          var re = new RegExp('(' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+          title = title.replace(re, '<em>$1</em>');
+        });
+        return '<a class="post-result-item" href="/articles/' + r.fileName + '" onclick="closeSidebar()">' +
+          '<div class="post-result-title">' + title + '</div>' +
+          (r.author ? '<div class="post-result-meta">' + escapeHtml(r.author) + '</div>' : '') +
+          (r.snippet ? '<div class="post-result-snippet">' + escapeHtml(r.snippet) + '</div>' : '') +
+          '</a>';
+      }).join('');
+    }
+
+    if (html === '') {
+      html += '<div class="sidebar-empty">' + (sidebarQuery ? '未找到相关对话或帖子' : '暂无对话') + '</div>';
+    }
+
+    list.innerHTML = html;
+  } catch (err) {
+    list.innerHTML = '<div class="sidebar-empty">加载失败: ' + escapeHtml(String(err && err.message ? err.message : err)) + '<br><small>请刷新重试</small></div>';
+  }
+}
+/**
+ * Sidebar title: prefer complete first sentence/question.
+ * CSS shows up to 2 lines; JS soft-caps higher so short titles aren't chopped early.
+ * Never mid-word cut on CJK (e.g. keep 「场景」 not 「场」).
+ */
+function summarizeConvTitle(raw) {
+  var t = String(raw || '').replace(/\s+/g, ' ').trim();
+  if (!t) return '新对话';
+  // Drop markdown noise (keep CJK/latin content intact)
+  t = t.replace(/[#*`>_]/g, '').replace(/\s+/g, ' ').trim();
+
+  // Prefer complete first question / sentence, restore terminator
+  var endMark = '';
+  var qMatch = t.match(/^([\s\S]+?)([？?])/);
+  var first;
+  if (qMatch && qMatch[1].trim().length >= 4) {
+    first = qMatch[1].trim();
+    endMark = qMatch[2] === '?' ? '？' : qMatch[2];
+  } else {
+    var parts = t.split(/[。！!\n；;]/);
+    first = (parts[0] && parts[0].trim().length >= 4) ? parts[0].trim() : t;
+    if (/[。！!]/.test(t.charAt(first.length))) {
+      if (first.length <= 28) endMark = t.charAt(first.length);
+    }
+  }
+
+  first = first.replace(/^(请问|想问一下|帮我|请帮我|麻烦|你好[，,]\s*)/i, '').trim();
+  if (!first) return '新对话';
+
+  // 2-line layout ≈ 40–48 CJK chars readable; keep whole sentence under this
+  var SOFT_MAX = 48;
+  var full = first + endMark;
+  if (full.length <= SOFT_MAX) return full;
+  // Slightly longer still keep complete (avoids mid-word stump)
+  if (full.length <= 56) return full;
+
+  // Very long: cut only at natural boundaries; if remainder ≤2 chars, keep all
+  var HARD = 48;
+  if (first.length - HARD <= 2) return full;
+
+  var slice = first.slice(0, HARD);
+  var bounds = [' ', '，', '、', '：', ':', '—', '–', '-', '·', '；'];
+  var best = -1;
+  for (var i = 0; i < bounds.length; i++) {
+    var idx = slice.lastIndexOf(bounds[i]);
+    if (idx >= 12 && idx > best) best = idx;
+  }
+  // Truncated → ellipsis; never glue original ？ onto a mid-word stump
+  if (best > 0) return slice.slice(0, best).trim() + '…';
+  return slice.trim() + '…';
+}
+
+function getConversationRawTitle(c) {
+  c = c || {};
+  var msgs = c.messages || [];
+  if (c.title && String(c.title).trim()) return String(c.title).trim();
+  for (var i = 0; i < msgs.length; i++) {
+    if (msgs[i] && msgs[i].role === 'user' && typeof msgs[i].content === 'string' && msgs[i].content.trim()) {
+      return msgs[i].content.trim();
+    }
+  }
+  return '新对话';
+}
+
+function buildSidebarItemHtml(id) {
+  var c = conversations[id] || {};
+  var title = summarizeConvTitle(getConversationRawTitle(c));
+  var dt = new Date(c.updatedAt || c.createdAt || Date.now());
+  var mo = dt.getMonth(); var d = dt.getDate(); var h = dt.getHours(); var mi = dt.getMinutes();
+  if (isNaN(mo)) { dt = new Date(); mo = dt.getMonth(); d = dt.getDate(); h = dt.getHours(); mi = dt.getMinutes(); }
+  var ts = (mo+1)+'/'+d+' '+String(h).padStart(2,'0')+':'+String(mi).padStart(2,'0');
+  return '<div class="sidebar-item'+(id===activeId?' active':'')+'" data-id="'+id+'" onclick="switchConversation(\''+id+'\')">'+
+    '<div class="conv-main"><div class="conv-title">'+escapeHtml(title)+'</div><div class="conv-time">'+ts+'</div></div>'+
+    '<button class="conv-del" onclick="event.stopPropagation();deleteConversation(\''+id+'\')" title="删除" aria-label="删除"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg></button></div>';
+}
+function updateSidebarItem(id) {
+  if (sidebarQuery || sidebarPostResults.length > 0) { renderSidebar(); return; }
+  var list = document.getElementById('sidebarList');
+  var existing = list.querySelector('.sidebar-item[data-id="'+id+'"]');
+  if (existing) existing.remove();
+  var div = document.createElement('div');
+  div.innerHTML = buildSidebarItemHtml(id);
+  list.insertBefore(div.firstElementChild, list.firstElementChild);
+  updateSidebarActive();
+}
+function removeSidebarItem(id) {
+  var existing = document.querySelector('.sidebar-item[data-id="'+id+'"]');
+  if (existing) existing.remove();
+}
+function updateSidebarActive() {
+  var items = document.querySelectorAll('.sidebar-item');
+  items.forEach(function(el) { el.classList.toggle('active', el.dataset.id === activeId); });
+}
+function newConversation() {
+  draftContextArticle = '';
+  var id = 'conv-' + Date.now();
+  conversations[id] = { id: id, title: '', messages: [], createdAt: Date.now(), updatedAt: Date.now() };
+  saveConversations(conversations);
+  activeId = id; setActiveId(id);
+  var input = document.getElementById('questionInput');
+  if (input) input.dataset.context = '';
+  renderMessages(); updateSidebarItem(id);
+  closeSidebar();
+  document.getElementById('questionInput').focus();
+}
+function switchConversation(id) {
+  if (id === activeId) { closeSidebar(); return; }
+  draftContextArticle = '';
+  activeId = id; setActiveId(id);
+  renderMessages(); updateSidebarActive();
+  closeSidebar();
+  scrollToBottom();
+}
+function deleteConversation(id) {
+  if (!confirm('删除这条对话？')) return;
+  delete conversations[id];
+  removeSidebarItem(id);
+  var ids = Object.keys(conversations);
+  if (id === activeId) {
+    activeId = ids.length > 0 ? ids[ids.length-1] : '';
+    if (!activeId) {
+      activeId = 'conv-'+Date.now();
+      conversations[activeId] = { id: activeId, title: '', messages: [], createdAt: Date.now(), updatedAt: Date.now() };
+    }
+    setActiveId(activeId); renderMessages(); updateSidebarActive();
+  }
+  saveConversations(conversations);
+}
+
+// ---- Messages ----
+function buildMessageHtml(m, i) {
+  if (m.role === 'error') {
+    return '<div class="error-msg">'+escapeHtml(m.content)+'<button onclick="retryLast()">重试</button></div>';
+  }
+  var sel = selectedSet[i] ? ' selected' : '';
+  var longPress = ' oncontextmenu="event.preventDefault();enterSelectMode('+i+')" '+
+    'ontouchstart="selectTouchStart(event,'+i+')" ontouchend="selectTouchEnd(event,'+i+')" '+
+    'onclick="onMsgClick(event,'+i+')"';
+  if (m.role === 'user') {
+    return '<div class="msg user'+sel+'" data-index="'+i+'"'+longPress+'>'+
+      '<div class="select-check"></div>'+
+      '<div class="bubble">'+escapeHtml(m.content).replace(/\n/g,'<br>')+'</div></div>';
+  }
+  // assistant
+  var html = '<div class="msg ai'+sel+'" data-index="'+i+'"'+longPress+'>'+
+    '<div class="select-check"></div>'+
+    '<div class="bubble">'+simpleMarkdown(m.content)+'</div>';
+  if (m.sources && m.sources.length) {
+    var sid = 'src-'+i;
+    html += '<button class="sources-toggle" onclick="toggleSources(\''+sid+'\')">▸ 查看来源 ('+m.sources.length+'篇)</button>';
+    html += '<div class="sources-list" id="'+sid+'">';
+    for (var j = 0; j < m.sources.length; j++) {
+      var s = m.sources[j];
+      html += '<a class="source-item" href="'+(s.fileName?'/articles/'+s.fileName:(s.tweetUrl||'#'))+'">'+escapeHtml(s.title)+' — '+escapeHtml(s.author)+'</a>';
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+function renderMessages() {
+  var container = document.getElementById('messages');
+  var conv = conversations[activeId];
+  if (!conv || conv.messages.length === 0) {
+    container.innerHTML = '<div class="welcome" id="welcome">'+
+      '<h3>你好，我是你的知识伙伴 🤖</h3>'+
+      '<p>基于你收藏的所有文章，你可以问我任何问题。<br>我会跨文章整合信息，给出有据可查的答案。</p>'+
+      '<div class="suggestions" id="suggestions">'+
+      '<div class="suggestions-loading" style="color:var(--text-secondary);font-size:13px;padding:8px 0">正在准备推荐问题…</div>'+
+      '</div></div>';
+    loadSuggestions(); return;
+  }
+  var html = '';
+  for (var i = 0; i < conv.messages.length; i++) html += buildMessageHtml(conv.messages[i], i);
+  container.innerHTML = html;
+}
+function appendMessage(index) {
+  var container = document.getElementById('messages');
+  var welcome = document.getElementById('welcome');
+  if (welcome) welcome.remove();
+  var conv = conversations[activeId]; if (!conv) return;
+  var m = conv.messages[index]; if (!m) return;
+  var div = document.createElement('div');
+  div.innerHTML = buildMessageHtml(m, index);
+  var el = div.firstElementChild;
+  container.appendChild(el);
+  return el;
+}
+// ---- Selection mode ----
+
+function clearDomSelection() {
+  try {
+    var sel = window.getSelection && window.getSelection();
+    if (sel && sel.removeAllRanges) sel.removeAllRanges();
+  } catch (err) { /* ignore */ }
+}
+
+function selectTouchStart(e, index) {
+  if (selectMode) return;
+  touchStartIndex = index;
+  // 记录触摸点，供菜单定位（timeout 时 event 可能已失效）
+  var touch = e.touches && e.touches[0];
+  var touchPoint = touch
+    ? { clientX: touch.clientX, clientY: touch.clientY }
+    : { clientX: e.clientX || 100, clientY: e.clientY || 200 };
+  longPressTimer = setTimeout(function() {
+    clearDomSelection();
+    showContextMenu(index, touchPoint);
+    if (navigator.vibrate) navigator.vibrate(15);
+  }, 500);
+}
+function selectTouchEnd(e, index) {
+  clearTimeout(longPressTimer);
+  longPressTimer = null;
+  if (touchStartIndex !== index) clearTimeout(longPressTimer);
+}
+
+/** 消息点击：仅多选模式切换勾选；吞掉菜单关闭后的 ghost click */
+function onMsgClick(e, index) {
+  if (!selectMode) return;
+  if (e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  if (selectClickGuarded()) return;
+  toggleSelect(index);
+}
+
+// ---- Context menu (WeChat-style dark bubble) ----
+function showContextMenu(index, e) {
+  var conv = conversations[activeId]; if (!conv) return;
+  var m = conv.messages[index]; if (!m || m.role === 'error') return;
+
+  // 立刻清掉系统选区，防止长按带出整页蓝选
+  clearDomSelection();
+
+  // Remove any existing menu
+  closeContextMenu();
+
+  // Dark overlay for tap-to-dismiss
+  var overlay = document.createElement('div');
+  overlay.id = 'ctxOverlay';
+  overlay.className = 'ctx-overlay';
+  overlay.onclick = closeContextMenu;
+  document.body.appendChild(overlay);
+
+  var menu = document.createElement('div');
+  menu.id = 'ctxMenu';
+  menu.className = 'ctx-menu';
+  menu.innerHTML =
+    '<div class="ctx-item" data-act="copy" data-idx="'+index+'">复制</div>' +
+    '<div class="ctx-divider"></div>' +
+    '<div class="ctx-item" data-act="copy-pair" data-idx="'+index+'">复制问答</div>' +
+    '<div class="ctx-divider"></div>' +
+    '<div class="ctx-item" data-act="select" data-idx="'+index+'">选择</div>' +
+    '<div class="ctx-divider"></div>' +
+    '<div class="ctx-item ctx-delete" data-act="delete" data-idx="'+index+'">删除</div>';
+  var actLock = 0;
+  function handleCtxAct(ev) {
+    var item = ev.target.closest('.ctx-item');
+    if (!item) return;
+    // touchend 必须 preventDefault，否则菜单移除后会 ghost click 到下面的消息
+    if (ev.cancelable) ev.preventDefault();
+    ev.stopPropagation();
+    if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+    var now = Date.now();
+    if (now - actLock < 500) return; // 防 touchend+click 双触发
+    actLock = now;
+    var act = item.getAttribute('data-act');
+    var idx = parseInt(item.getAttribute('data-idx'), 10);
+    // 先挡住后续 click，再关菜单/进多选
+    armSelectClickGuard(600);
+    if (act === 'copy') copyMessage(idx, false);
+    else if (act === 'copy-pair') copyMessage(idx, true);
+    else if (act === 'select') enterSelectMode(idx);
+    else if (act === 'delete') deleteViaSelect(idx);
+  }
+  menu.addEventListener('click', handleCtxAct);
+  menu.addEventListener('touchend', handleCtxAct, { passive: false });
+  menu.addEventListener('touchstart', function(ev) {
+    // 阻止 touch 冒泡到消息，避免和长按逻辑打架
+    ev.stopPropagation();
+  }, { passive: true });
+  document.body.appendChild(menu);
+
+  // Center the menu horizontally, position near touch point vertically
+  var x = (e.touches ? e.touches[0].clientX : e.clientX) || 100;
+  var y = (e.touches ? e.touches[0].clientY : e.clientY) || 200;
+  var menuW = 130;
+  menu.style.left = Math.max(10, Math.min(x - menuW/2, window.innerWidth - menuW - 10)) + 'px';
+  if (y < window.innerHeight / 2) {
+    menu.style.top = (y + 10) + 'px'; // Below touch
+  } else {
+    menu.style.top = (y - 20) + 'px';
+    menu.style.transform = 'translateY(-100%)';
+  }
+}
+
+function closeContextMenu() {
+  var m = document.getElementById('ctxMenu'); if (m) m.remove();
+  var o = document.getElementById('ctxOverlay'); if (o) o.remove();
+}
+
+function showToast(msg) {
+  var t = document.getElementById('toast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'toast';
+    t.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:300;background:rgba(0,0,0,0.8);color:#fff;padding:10px 24px;border-radius:8px;font-size:15px;pointer-events:none;transition:opacity 0.3s;';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.style.opacity = '1';
+  clearTimeout(t._timer);
+  t._timer = setTimeout(function() { t.style.opacity = '0'; }, 1500);
+}
+
+/** 找与 index 配对的 user/assistant 下标，没有则 -1 */
+function findPairIndex(index) {
+  var conv = conversations[activeId]; if (!conv) return -1;
+  var m = conv.messages[index]; if (!m) return -1;
+  if (m.role === 'user') {
+    for (var i = index + 1; i < conv.messages.length; i++) {
+      if (conv.messages[i].role === 'assistant') return i;
+    }
+  } else if (m.role === 'assistant') {
+    for (var i = index - 1; i >= 0; i--) {
+      if (conv.messages[i].role === 'user') return i;
+    }
+  }
+  return -1;
+}
+
+/** Markdown → 可读纯文本（完整保留正文，去掉语法噪音） */
+function markdownToPlainText(md) {
+  var t = md || '';
+  // fenced code: keep body
+  t = t.replace(/```[^\n]*\n?([\s\S]*?)```/g, function(_m, body) {
+    return '\n' + String(body || '').replace(/\s+$/, '') + '\n';
+  });
+  t = t.replace(/!\[[^\]]*\]\([^)]+\)/g, '');
+  t = t.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+  t = t.replace(/^#{1,6}\s+/gm, '');
+  t = t.replace(/\*\*(.+?)\*\*/g, '$1');
+  t = t.replace(/__(.+?)__/g, '$1');
+  t = t.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1$2');
+  t = t.replace(/`([^`]+)`/g, '$1');
+  t = t.replace(/^>\s?/gm, '');
+  t = t.replace(/^[\-\*]\s+/gm, '• ');
+  t = t.replace(/[ \t]+\n/g, '\n');
+  t = t.replace(/\n{3,}/g, '\n\n');
+  return t.trim();
+}
+
+/**
+ * 取单条消息的完整可复制文本。
+ * 以 messages[i].content 为准（源数据），DOM 仅作兜底（取更长者）。
+ */
+function getMessageCopyText(index) {
+  var conv = conversations[activeId]; if (!conv) return '';
+  var m = conv.messages[index]; if (!m) return '';
+  var stored = (m.content || '').trim();
+  if (m.role === 'assistant') stored = markdownToPlainText(stored);
+
+  var el = document.querySelector('.msg[data-index="' + index + '"] .bubble');
+  var domText = '';
+  if (el) {
+    domText = (el.innerText || el.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+  }
+  // 两侧都可能完整；取「去空白后更长」的一份，避免复制到半截
+  var a = stored.replace(/\s/g, '').length;
+  var b = domText.replace(/\s/g, '').length;
+  if (b > a) return domText;
+  return stored;
+}
+
+function writeClipboard(text) {
+  text = text || '';
+  if (!text) {
+    showToast('没有可复制的内容');
+    return Promise.resolve(false);
+  }
+  var doneOk = function() { showToast('已复制全文'); return true; };
+  var fallback = function() {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:none;opacity:0;';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      var ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (ok) { doneOk(); return true; }
+    } catch (e) {}
+    showToast('复制失败，请长按正文手动选择');
+    return false;
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).then(doneOk).catch(function() {
+      return fallback();
+    });
+  }
+  return Promise.resolve(fallback());
+}
+
+/**
+ * @param {number} index
+ * @param {boolean} [withPair]  true = 复制完整问答对
+ */
+function copyMessage(index, withPair) {
+  var conv = conversations[activeId]; if (!conv) return;
+  var m = conv.messages[index]; if (!m) return;
+
+  // 先取文本，再关菜单，尽量保住用户手势上下文
+  var text = '';
+  if (withPair) {
+    var pair = findPairIndex(index);
+    var qText = '';
+    var aText = '';
+    if (m.role === 'user') {
+      qText = getMessageCopyText(index);
+      aText = pair >= 0 ? getMessageCopyText(pair) : '';
+    } else {
+      aText = getMessageCopyText(index);
+      qText = pair >= 0 ? getMessageCopyText(pair) : '';
+    }
+    if (qText && aText) text = '问：' + qText + '\n\n答：' + aText;
+    else text = qText || aText;
+  } else {
+    text = getMessageCopyText(index);
+  }
+
+  closeContextMenu();
+  writeClipboard(text);
+}
+
+/** 多选模式：按消息顺序拼接完整正文 */
+function copySelected() {
+  var conv = conversations[activeId];
+  if (!conv) return;
+  var indices = Object.keys(selectedSet).map(Number).sort(function(a, b) { return a - b; });
+  if (!indices.length) {
+    showToast('请先选择消息');
+    return;
+  }
+  var parts = [];
+  for (var i = 0; i < indices.length; i++) {
+    var idx = indices[i];
+    var m = conv.messages[idx];
+    if (!m) continue;
+    var body = getMessageCopyText(idx);
+    if (!body) continue;
+    if (m.role === 'user') parts.push('问：' + body);
+    else if (m.role === 'assistant') parts.push('答：' + body);
+    else parts.push(body);
+  }
+  writeClipboard(parts.join('\n\n'));
+}
+
+/** 找问答配对索引（问↔答一起选） */
+function findPairIndex(index) {
+  var conv = conversations[activeId];
+  if (!conv) return -1;
+  var m = conv.messages[index];
+  if (!m) return -1;
+  if (m.role === 'user') {
+    for (var i = index + 1; i < conv.messages.length; i++) {
+      if (conv.messages[i].role === 'assistant') return i;
+    }
+  } else if (m.role === 'assistant') {
+    for (var i = index - 1; i >= 0; i--) {
+      if (conv.messages[i].role === 'user') return i;
+    }
+  }
+  return -1;
+}
+
+/** 强制选中/取消一对消息（非 toggle） */
+function setPairSelected(index, on) {
+  var pairIndex = findPairIndex(index);
+  if (on) {
+    selectedSet[index] = true;
+    if (pairIndex >= 0) selectedSet[pairIndex] = true;
+  } else {
+    delete selectedSet[index];
+    if (pairIndex >= 0) delete selectedSet[pairIndex];
+  }
+}
+
+// Delete via select: pre-select this pair, enter selection mode, show delete bar
+function deleteViaSelect(index) {
+  var conv = conversations[activeId]; if (!conv) return;
+  var m = conv.messages[index]; if (!m) return;
+  closeContextMenu();
+  armSelectClickGuard(600);
+
+  selectMode = true;
+  selectedSet = {};
+  setPairSelected(index, true);
+  document.body.classList.add('select-mode');
+  document.getElementById('selectActionBar').classList.add('show');
+  renderMessages();
+  updateSelectUI();
+}
+
+function enterSelectMode(startIndex) {
+  closeContextMenu();
+  armSelectClickGuard(600);
+  selectMode = true;
+  selectedSet = {};
+  // 直接选中，不走 toggle，避免与 ghost click 连点抵消
+  setPairSelected(startIndex, true);
+  document.body.classList.add('select-mode');
+  document.getElementById('selectActionBar').classList.add('show');
+  renderMessages();
+  updateSelectUI();
+}
+
+function exitSelectMode() {
+  selectMode = false;
+  selectedSet = {};
+  selectClickGuardUntil = 0;
+  clearTimeout(longPressTimer);
+  document.body.classList.remove('select-mode');
+  document.getElementById('selectActionBar').classList.remove('show');
+  renderMessages();
+}
+
+function toggleSelect(index) {
+  if (!selectMode) return;
+  // 进多选后的幽灵点击会立刻反选——忽略
+  if (selectClickGuarded()) return;
+  var conv = conversations[activeId];
+  if (!conv) return;
+  var m = conv.messages[index];
+  if (!m || m.role === 'error') return;
+
+  setPairSelected(index, !selectedSet[index]);
+  updateSelectUI();
+}
+
+function updateSelectUI() {
+  var count = Object.keys(selectedSet).length;
+  document.getElementById('selectCount').textContent = '已选 ' + count + ' 条';
+  // Update message selection classes
+  var msgs = document.querySelectorAll('.msg');
+  msgs.forEach(function(el) {
+    var idx = parseInt(el.dataset.index);
+    el.classList.toggle('selected', !!selectedSet[idx]);
+  });
+}
+
+function deleteSelected() {
+  var conv = conversations[activeId];
+  if (!conv) return;
+  var indices = Object.keys(selectedSet).map(Number).sort(function(a,b){return b-a;});
+  if (indices.length === 0) return;
+  if (!confirm('删除选中的 ' + indices.length + ' 条消息？')) return;
+
+  for (var i = 0; i < indices.length; i++) {
+    conv.messages.splice(indices[i], 1);
+  }
+  conv.updatedAt = Date.now();
+  saveConversations(conversations);
+  exitSelectMode();
+  renderMessages();
+  updateSidebarItem(activeId);
+  scrollToBottom();
+}
+
+var _scrollBottomRaf = 0;
+var _scrollBottomForce = false;
+function scrollToBottom(force) {
+  var el = document.getElementById('chatArea');
+  if (!el) return;
+  if (force) _scrollBottomForce = true;
+  // Only scroll if user is already near the bottom (within 120px)
+  if (!_scrollBottomForce && el.scrollHeight - el.scrollTop - el.clientHeight > 120) return;
+  // Coalesce to one scroll per frame — avoids jitter from multi-delta / reflow races
+  if (_scrollBottomRaf) return;
+  _scrollBottomRaf = requestAnimationFrame(function() {
+    _scrollBottomRaf = 0;
+    var forced = _scrollBottomForce;
+    _scrollBottomForce = false;
+    var area = document.getElementById('chatArea');
+    if (!area) return;
+    if (!forced && area.scrollHeight - area.scrollTop - area.clientHeight > 160) return;
+    area.scrollTop = area.scrollHeight;
+  });
+}
+
+// ---- Theme ----
+function updateThemeIcons() {
+  var d = document.documentElement.getAttribute('data-theme') === 'dark';
+  var s=document.getElementById('theme-sun'), m=document.getElementById('theme-moon');
+  if(s) s.style.display = d?'none':'';
+  if(m) m.style.display = d?'':'none';
+}
+function toggleTheme() {
+  var c = document.documentElement.getAttribute('data-theme');
+  document.documentElement.setAttribute('data-theme', c==='dark'?'light':'dark');
+  localStorage.setItem('theme', c==='dark'?'light':'dark');
+  updateThemeIcons();
+}
+
+// ---- Suggestions ----
+function paintSuggestions(questions) {
+  var c = document.getElementById('suggestions');
+  if (!c) return;
+  __suggestedQuestions = questions || [];
+  if (!__suggestedQuestions.length) {
+    c.innerHTML = '<div class="suggestions-empty" style="color:var(--text-tertiary);font-size:13px;padding:8px 0">暂无推荐问题，直接输入提问即可</div>';
+    return;
+  }
+  c.innerHTML = __suggestedQuestions.map(function(q, i) {
+    return '<button type="button" class="suggestion-btn" data-qi="'+i+'">'+escapeHtml(q)+'</button>';
+  }).join('');
+  // Event delegation — avoids broken onclick when question contains quotes
+  c.onclick = function(ev) {
+    var btn = ev.target && ev.target.closest ? ev.target.closest('.suggestion-btn') : null;
+    if (!btn) return;
+    var i = parseInt(btn.getAttribute('data-qi') || '-1', 10);
+    var q = __suggestedQuestions[i];
+    if (q) askSuggestion(q);
+  };
+}
+
+async function loadSuggestions() {
+  var seq = ++__suggestionsLoadSeq;
+  var c = document.getElementById('suggestions');
+  if (c && !c.querySelector('.suggestion-btn')) {
+    c.innerHTML = '<div class="suggestions-loading" style="color:var(--text-secondary);font-size:13px;padding:8px 0">正在准备推荐问题…</div>';
+  }
+  try {
+    var conv = conversations[activeId];
+    var ctx = draftContextArticle || (conv && conv.contextArticle) || '';
+    var url = '/api/qa/suggestions';
+    if (ctx) url += '?context=' + encodeURIComponent(ctx);
+    var res = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
+    if (seq !== __suggestionsLoadSeq) return; // stale
+    if (!res.ok) {
+      paintSuggestions([]);
+      return;
+    }
+    var data = await res.json();
+    if (seq !== __suggestionsLoadSeq) return;
+    paintSuggestions(data.questions || []);
+  } catch (err) {
+    if (seq !== __suggestionsLoadSeq) return;
+    paintSuggestions([]);
+  }
+}
+function askSuggestion(q) {
+  document.getElementById('questionInput').value = q;
+  // Mark whole suggestion batch as used (fire-and-forget).
+  // Backend will regenerate a full new set of 3 next time — not leftovers.
+  var conv = conversations[activeId];
+  var ctx = draftContextArticle || (conv && conv.contextArticle) || '';
+  fetch('/api/qa/suggestions/use', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ context: ctx || null, count: 1 }),
+    keepalive: true
+  }).catch(function(){});
+  // Clear UI; next loadSuggestions() gets 3 brand-new questions
+  var c = document.getElementById('suggestions'); if(c) c.innerHTML = '';
+  sendQuestion();
+}
+
+// ---- Q&A ----
+function handleKeyDown(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuestion(); }
+}
+async function sendQuestion() {
+  if (isThinking) return;
+  var input = document.getElementById('questionInput');
+  if (!input) return;
+  var question = input.value.trim();
+  if (!question || question.length < 2) return;
+  input.value = ''; input.style.height = 'auto';
+
+  var w = document.getElementById('welcome'); if(w) w.style.display = 'none';
+
+  // Ensure conversation exists
+  if (!activeId || !conversations[activeId]) {
+    activeId = 'conv-' + Date.now();
+    var newConv = { id: activeId, title: '', messages: [], createdAt: Date.now(), updatedAt: Date.now() };
+    if (draftContextArticle) newConv.contextArticle = draftContextArticle;
+    conversations[activeId] = newConv;
+    saveConversations(conversations);
+    setActiveId(activeId);
+  }
+
+  var conv = conversations[activeId]; if(!conv) return;
+  var contextArticle = conv.contextArticle || draftContextArticle || undefined;
+  if (contextArticle) conv.contextArticle = contextArticle;
+  draftContextArticle = '';
+  if (!conv.title && conv.messages.length === 0) {
+    conv.title = summarizeConvTitle(question);
+  }
+  conv.messages.push({ role: 'user', content: question });
+  conv.updatedAt = Date.now();
+  saveConversations(conversations);
+  var userIndex = conv.messages.length - 1;
+  appendMessage(userIndex); scrollToBottom(); updateSidebarItem(activeId);
+
+  isThinking = true;
+  document.getElementById('sendBtn').disabled = true;
+  document.getElementById('questionInput').disabled = true;
+  var think = addThinking();
+
+  // 首字才挂回复气泡，避免空框闪一下
+  var assistantMsg = { role: 'assistant', content: '', sources: [] };
+  var assistantIndex = -1;
+  var bubbleMounted = false;
+
+  function ensureAssistantBubble() {
+    if (bubbleMounted) return;
+    if (think) { think.remove(); think = null; }
+    conv.messages.push(assistantMsg);
+    assistantIndex = conv.messages.length - 1;
+    appendMessage(assistantIndex);
+    bubbleMounted = true;
+    scrollToBottom(true);
+  }
+
+  try {
+    var body = { question: question };
+    if (contextArticle) body.contextArticle = contextArticle;
+    // Exclude the message we just added — server puts current question in RAG prompt.
+    // Sending it again in history made the model restate "用户问的是…"
+    var hist = [];
+    for (var i = 0; i < conv.messages.length - 1; i++) {
+      var mm = conv.messages[i];
+      if (mm.role === 'user' || mm.role === 'assistant')
+        hist.push({ role: mm.role === 'user' ? 'user' : 'assistant', content: mm.content });
+    }
+    if (hist.length > 12) hist = hist.slice(-12);
+    body.history = hist;
+
+    var res = await fetch('/api/qa/stream', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) {
+      if (think) { think.remove(); think = null; }
+      var ed = await res.json().catch(function(){ return { error: '请求失败' }; });
+      conv.messages.push({ role: 'error', content: ed.error || '请求失败，请重试' });
+      appendMessage(conv.messages.length - 1);
+    } else {
+      var reader = res.body.getReader();
+      var decoder = new TextDecoder();
+      var buffer = '';
+      var streamRaf = 0;
+      var contentDirty = false;
+      var sourcesDirty = false;
+      var lastMdPaint = 0;
+      var MD_MIN_MS = 48; // throttle markdown reparse — still live, less layout thrash
+      function paintStream(force) {
+        streamRaf = 0;
+        if (!bubbleMounted) return; // 还没首字，不画空框
+        var now = Date.now();
+        if (!force && contentDirty && (now - lastMdPaint) < MD_MIN_MS) {
+          streamRaf = requestAnimationFrame(function() { paintStream(false); });
+          return;
+        }
+        if (contentDirty || sourcesDirty || force) {
+          contentDirty = false;
+          sourcesDirty = false;
+          lastMdPaint = now;
+          updateAssistantBubble(assistantIndex, assistantMsg.content, assistantMsg.sources);
+        }
+        scrollToBottom();
+      }
+      function scheduleStreamPaint() {
+        if (streamRaf) return;
+        streamRaf = requestAnimationFrame(function() { paintStream(false); });
+      }
+      while (true) {
+        var r = await reader.read();
+        if (r.done) break;
+        buffer += decoder.decode(r.value, { stream: true });
+        var lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        var eventType = '';
+        for (var li = 0; li < lines.length; li++) {
+          var line = lines[li].trim();
+          if (line.startsWith('event:')) { eventType = line.slice(6).trim(); continue; }
+          if (!line.startsWith('data:')) continue;
+          var dataText = line.slice(5).trim();
+          try {
+            var data = JSON.parse(dataText);
+            if (eventType === 'sources') {
+              // 仅缓存来源；等首字再一起渲染，避免空气泡 + 来源先蹦出
+              assistantMsg.sources = data;
+              if (bubbleMounted) {
+                sourcesDirty = true;
+                scheduleStreamPaint();
+              }
+            } else if (eventType === 'delta') {
+              var piece = data.delta || '';
+              if (!piece) { eventType = ''; continue; }
+              assistantMsg.content += piece;
+              // 至少有一个可见字符才挂回复框，避免模型先吐空白/换行时出现空气泡
+              if (!bubbleMounted && !/\S/.test(assistantMsg.content)) {
+                eventType = '';
+                continue;
+              }
+              var firstMount = !bubbleMounted;
+              // 有首字才出现回复框（去掉 thinking 点）
+              ensureAssistantBubble();
+              contentDirty = true;
+              // 首挂立刻画内容，不等 rAF，杜绝「空框闪一帧」
+              if (firstMount) paintStream(true);
+              else scheduleStreamPaint();
+            } else if (eventType === 'error') {
+              var errMsg = data.error || '请求失败';
+              if (/^aborted$/i.test(String(errMsg).trim()) ||
+                  /timeout|canceled|cancelled|econnaborted/i.test(String(errMsg))) {
+                errMsg = '回答生成超时或连接中断，请重试';
+              }
+              if ((assistantMsg.content || '').replace(/\s/g, '').length >= 40) {
+                assistantMsg.content += '\n\n> ⚠️ ' + errMsg;
+              } else {
+                assistantMsg.content = '> ⚠️ ' + errMsg;
+              }
+              ensureAssistantBubble();
+              contentDirty = true;
+              scheduleStreamPaint();
+              break;
+            }
+          } catch(e) {}
+          eventType = '';
+        }
+      }
+      if (streamRaf) { cancelAnimationFrame(streamRaf); streamRaf = 0; }
+      // 流结束仍无字：去掉 thinking；若有来源则挂气泡展示来源
+      if (!bubbleMounted) {
+        if (think) { think.remove(); think = null; }
+        if (assistantMsg.sources && assistantMsg.sources.length) {
+          assistantMsg.content = assistantMsg.content || '（未生成正文）';
+          ensureAssistantBubble();
+        }
+      }
+      paintStream(true);
+      scrollToBottom(true);
+    }
+  } catch (err) {
+    if (think) { think.remove(); think = null; }
+    if (bubbleMounted && assistantIndex >= 0) {
+      conv.messages[assistantIndex] = { role: 'error', content: '网络错误，请检查连接后重试' };
+      renderMessages();
+    } else {
+      conv.messages.push({ role: 'error', content: '网络错误，请检查连接后重试' });
+      appendMessage(conv.messages.length - 1);
+    }
+  } finally {
+    if (think) { think.remove(); think = null; }
+    conv.updatedAt = Date.now();
+    saveConversations(conversations);
+    isThinking = false;
+    document.getElementById('sendBtn').disabled = false;
+    document.getElementById('questionInput').disabled = false;
+    document.getElementById('questionInput').focus();
+    updateSidebarItem(activeId);
+  }
+}
+// Update assistant bubble with live markdown (used if needed outside stream path)
+function updateAssistantContent(index, text) {
+  var msgs = document.getElementById('messages').children;
+  var el = msgs[index];
+  if (!el) return;
+  var bubble = el.querySelector('.bubble');
+  if (!bubble) return;
+  bubble.innerHTML = simpleMarkdown(text || '');
+}
+
+// Update assistant bubble with full markdown render + sources
+function updateAssistantBubble(index, text, sources) {
+  var msgs = document.getElementById('messages').children;
+  var el = msgs[index];
+  if (!el) return;
+  var bubble = el.querySelector('.bubble');
+  if (!bubble) return;
+  bubble.innerHTML = simpleMarkdown(text);
+
+  // Update or add sources
+  var existingSrc = el.querySelector('.sources-list');
+  if (existingSrc) existingSrc.remove();
+  var existingBtn = el.querySelector('.sources-toggle');
+  if (existingBtn) existingBtn.remove();
+
+  if (sources && Array.isArray(sources) && sources.length > 0) {
+    var sid = 'src-' + index;
+    var toggleBtn = document.createElement('button');
+    toggleBtn.className = 'sources-toggle';
+    toggleBtn.textContent = '▸ 查看来源 (' + sources.length + '篇)';
+    toggleBtn.onclick = function() {
+      var list = document.getElementById(sid);
+      if (list) {
+        var open = list.classList.contains('open');
+        list.classList.toggle('open', !open);
+        toggleBtn.textContent = (open ? '▸' : '▾') + ' 查看来源 (' + sources.length + '篇)';
+      }
+    };
+    el.appendChild(toggleBtn);
+
+    var list = document.createElement('div');
+    list.className = 'sources-list';
+    list.id = sid;
+    list.innerHTML = sources.map(function(s) {
+      return '<a class="source-item" href="' + (s.fileName ? '/articles/' + s.fileName : (s.tweetUrl || '#')) + '">' +
+        escapeHtml(s.title) + ' — ' + escapeHtml(s.author) + '</a>';
+    }).join('');
+    el.appendChild(list);
+  }
+}
+
+function addThinking() {
+  var c = document.getElementById('messages');
+  var d = document.createElement('div');
+  d.className = 'thinking';
+  d.innerHTML = '<div class="thinking-dots"><span></span><span></span><span></span></div>';
+  c.appendChild(d); scrollToBottom(); return d;
+}
+function retryLast() {
+  var es = document.querySelectorAll('.error-msg');
+  for (var i = 0; i < es.length; i++) es[i].remove();
+  document.getElementById('questionInput').focus();
+}
+function toggleSources(id) {
+  var el = document.getElementById(id); if(!el) return;
+  var open = el.classList.contains('open');
+  el.classList.toggle('open', !open);
+  var btn = el.previousElementSibling;
+  if(btn) { btn.textContent = btn.textContent.replace(open?'▾':'▸', open?'▸':'▾'); }
+}
+
+// ---- Markdown ----
+function escapeHtml(text) {
+  var d = document.createElement('div'); d.textContent = text || ''; return d.innerHTML;
+}
+function simpleMarkdown(text) {
+  var lines = text.split('\n');
+  var html = '', inList = '', inCode = false, cc = '';
+
+  function flushList() {
+    if (inList==='ul') html += '</ul>';
+    if (inList==='ol') html += '</ol>';
+    inList = '';
+  }
+  function inline(line) {
+    line = escapeHtml(line);
+    line = line.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    line = line.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    line = line.replace(/`(.+?)`/g, '<code>$1</code>');
+    line = line.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+    return line;
+  }
+  for (var i = 0; i < lines.length; i++) {
+    var raw = lines[i];
+    if (raw.trim().startsWith('```')) {
+      if (inCode) { html += '<pre><code>'+escapeHtml(cc.trim())+'</code></pre>'; cc=''; inCode=false; }
+      else { flushList(); inCode=true; }
+      continue;
+    }
+    if (inCode) { cc += raw+'\n'; continue; }
+    // Blank lines: keep open lists so "1.\n\n2." stays one <ol> (not three 1.s)
+    if (raw.trim() === '') continue;
+    if (/^(\-{3,}|_{3,}|\*{3,})\s*$/.test(raw.trim())) {
+      flushList(); html += '<hr>'; continue;
+    }
+    var h = raw.match(/^(#{1,4})\s+(.+)/);
+    if (h) { flushList(); html += '<h'+(h[1].length+1)+'>'+inline(h[2])+'</h'+(h[1].length+1)+'>'; continue; }
+    var ul = raw.match(/^[\-\*•]\s+(.+)/);
+    if (ul) { if(inList!=='ul'){flushList();html+='<ul>';inList='ul';} html+='<li>'+inline(ul[1])+'</li>'; continue; }
+    // 1. item / 1) item (need space) · 1、item (space optional, CJK style)
+    var ol = raw.match(/^(\d+)(?:[\.\)]\s+|、\s*)(.+)/);
+    if (ol) {
+      var n = parseInt(ol[1], 10);
+      if (inList !== 'ol') {
+        flushList();
+        html += n > 1 ? '<ol start="'+n+'">' : '<ol>';
+        inList = 'ol';
+      }
+      html += '<li value="'+n+'">'+inline(ol[2])+'</li>';
+      continue;
+    }
+    flushList();
+    html += '<p>'+inline(raw)+'</p>';
+  }
+  flushList();
+  // Unclosed fence while streaming — still show as code block
+  if (inCode) {
+    html += '<pre><code>'+escapeHtml(cc)+'</code></pre>';
+  }
+  return html;
+}
+
+// Cancel long press on scroll / move; kill accidental native selection
+(function() {
+  var chat = document.getElementById('chatArea');
+  chat.addEventListener('scroll', function() {
+    clearTimeout(longPressTimer);
+    touchStartIndex = -1;
+    clearDomSelection();
+  }, { passive: true });
+  chat.addEventListener('touchmove', function() {
+    clearTimeout(longPressTimer);
+  }, { passive: true });
+  // 若系统仍开选区，下一次 touchstart 清掉（避免残留蓝选）
+  chat.addEventListener('touchstart', function() {
+    if (!selectMode) clearDomSelection();
+  }, { passive: true });
+  // 桌面右键：同样清选区后出菜单（buildMessageHtml 已 preventDefault oncontextmenu）
+  document.addEventListener('selectionchange', function() {
+    // 菜单打开期间禁止系统选区
+    if (document.getElementById('ctxMenu')) clearDomSelection();
+  });
+})();
+
+// ---- Scroll-driven nav bar hide ----
+// Nav is fixed overlay; do NOT change chat padding when it hides (that caused stream jitter).
+(function() {
+  var nav = document.getElementById('navBar');
+  var chat = document.getElementById('chatArea');
+  var lastScroll = 0;
+  chat.addEventListener('scroll', function() {
+    // Programmatic stick-to-bottom during streaming — skip nav toggles
+    if (isThinking) {
+      lastScroll = chat.scrollTop;
+      return;
+    }
+    var st = chat.scrollTop;
+    // hide on scroll down, show on scroll up
+    if (st > lastScroll && st > 60) {
+      nav.classList.add('hidden');
+    } else if (st < lastScroll) {
+      nav.classList.remove('hidden');
+    }
+    lastScroll = st;
+  }, { passive: true });
+})();
+
+// ---- Textarea ----
+(function() {
+  var inp = document.getElementById('questionInput');
+  inp.addEventListener('input', function() {
+    this.style.height = 'auto';
+    this.style.height = Math.min(this.scrollHeight, 120)+'px';
+  });
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', function() {
+      var chat = document.getElementById('chatArea');
+      var off = window.innerHeight - window.visualViewport.height;
+      if (off > 0) {
+        chat.style.paddingBottom = off + 'px';
+        chat.scrollTop = chat.scrollHeight;
+      } else {
+        chat.style.paddingBottom = '';
+      }
+    });
+  }
+})();
+// ---- Blur input when tapping outside input area ----
+(function() {
+  var input = document.getElementById('questionInput');
+  if (!input) return;
+  document.addEventListener('click', function(e) {
+    if (document.activeElement !== input) return;
+    if (!e.target.closest('.input-area')) {
+      input.blur();
+    }
+  });
+})();
+
+</script>
+</body>
+</html>
