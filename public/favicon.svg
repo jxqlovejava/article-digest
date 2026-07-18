@@ -1,18 +1,25 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#1d9bf0"/>
-      <stop offset="100%" stop-color="#576b95"/>
-    </linearGradient>
-  </defs>
-  <!-- bookmark body -->
-  <path d="M22 12C22 8.686 24.686 6 28 6H72C75.314 6 78 8.686 78 12V92L52.5 72L50 70.2L47.5 72L22 92V12Z"
-        fill="url(#bg)" stroke="none"/>
-  <!-- inner page lines -->
-  <rect x="36" y="28" width="28" height="4" rx="2" fill="#fff" opacity="0.7"/>
-  <rect x="36" y="38" width="22" height="4" rx="2" fill="#fff" opacity="0.5"/>
-  <rect x="36" y="48" width="25" height="4" rx="2" fill="#fff" opacity="0.5"/>
-  <!-- checkmark -->
-  <polyline points="64,58 68,64 78,52" fill="none" stroke="#fff" stroke-width="3.5"
-            stroke-linecap="round" stroke-linejoin="round" opacity="0.8"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="none">
+  <!-- Full-bleed paper field (iOS masks corners) -->
+  <rect width="1024" height="1024" fill="#F4F1EA"/>
+  <!-- Open book — crisp geometric, high contrast ink -->
+  <g fill="#2F3A48">
+    <!-- left page -->
+    <path d="M512 268C428 228 316 228 232 252v492c88-24 204-22 280 28V268z"/>
+    <!-- right page -->
+    <path d="M512 268c84-40 196-40 280-16v492c-88-24-204-22-280 28V268z"/>
+  </g>
+  <!-- spine highlight (clean white line) -->
+  <path d="M512 292v486" stroke="#F4F1EA" stroke-width="22" stroke-linecap="round"/>
+  <!-- text lines left -->
+  <g stroke="#F4F1EA" stroke-width="20" stroke-linecap="round">
+    <path d="M300 400h128"/>
+    <path d="M300 468h108"/>
+    <path d="M300 536h118"/>
+  </g>
+  <!-- text lines right (balance, sharper silhouette) -->
+  <g stroke="#F4F1EA" stroke-width="20" stroke-linecap="round" opacity="0.85">
+    <path d="M596 400h128"/>
+    <path d="M596 468h108"/>
+    <path d="M596 536h118"/>
+  </g>
 </svg>

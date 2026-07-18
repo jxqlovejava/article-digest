@@ -8,6 +8,7 @@ import type { FetchedTweet, TweetPhoto } from './fetcher';
 import { deriveTitle } from './fetcher';
 import { insertArticle as insertSearchArticle, deleteArticle as deleteSearchArticle, syncMeta as syncSearchMeta, generateEmbedding } from './search';
 import { extractOpinions } from './opinions';
+import { normalizeScrapedText, normalizeAuthorField } from '../utils/textDecode';
 
 // ---- Marked setup ----
 const markedRenderer = new Renderer();
@@ -97,14 +98,23 @@ function escapeHtml(text: string): string {
     .replace(/"/g, '&quot;');
 }
 
+/** @deprecated use normalizeScrapedText — kept as thin alias for local call sites */
 function decodeHtmlEntities(text: string): string {
-  return text
-    .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, ' ');
+  return normalizeScrapedText(text);
+}
+
+/** Ensure tweet text fields are plain Unicode before escapeHtml / meta write. */
+function normalizeTweetFields(tweet: FetchedTweet): FetchedTweet {
+  return {
+    ...tweet,
+    title: tweet.title != null ? normalizeScrapedText(tweet.title) : tweet.title,
+    text: normalizeScrapedText(tweet.text || ''),
+    author: {
+      ...tweet.author,
+      name: normalizeAuthorField(tweet.author?.name),
+      screen_name: normalizeAuthorField(tweet.author?.screen_name) || tweet.author?.screen_name || 'unknown',
+    },
+  };
 }
 
 function convertMarkdownToHtml(text: string): string {
@@ -116,12 +126,11 @@ function convertMarkdownToHtml(text: string): string {
 }
 
 function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImageUrls: string[], allVideoUrls: string[], localVideoPaths: string[]): string {
+  // Plain text first — otherwise escapeHtml turns &amp; into &amp;amp; (and worse).
+  tweet = normalizeTweetFields(tweet);
   const dateStr = formatDate(tweet.created_timestamp);
-  // Decode HTML entities from API before processing — escapeHtml / marked.parse
-  // will re-encode them, so we must start from plain text to avoid double-encoding.
   const rawTitle = tweet.title || deriveTitle(tweet.text, 80);
-  const title = decodeHtmlEntities(rawTitle);
-  tweet = { ...tweet, text: decodeHtmlEntities(tweet.text) };
+  const title = normalizeScrapedText(rawTitle);
 
   // X-style SVG icons (defined locally, used in stats-bar below)
 
@@ -205,9 +214,11 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
   let contentHtml = isWechat ? text : convertMarkdownToHtml(text);
 
   // Step 3: replace image markers with real <img> tags
+  // alt: wechat/webpage use 配图; twitter keeps 推文图片 (screen readers / broken-img fallback)
+  const imgAlt = isWechat || isWebpage ? '配图' : '推文图片';
   contentHtml = contentHtml.replace(/<!--IMG:(\d+)-->/g, (_, idx) => {
     const src = imgMap[parseInt(idx, 10)];
-    return src ? `<img src="${src}" alt="推文图片" loading="lazy" class="tweet-inline-img" />` : '';
+    return src ? `<img src="${src}" alt="${imgAlt}" loading="lazy" class="tweet-inline-img" />` : '';
   });
 
   // Step 4: append unreferenced media (regular tweets without [IMG:N]/[VIDEO:N] markers)
@@ -216,7 +227,7 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
     if (!referencedImgIndices.has(i)) {
       const src = localImagePaths[i] || allImageUrls[i];
       if (src) {
-        unreferencedMedia.push(`<img src="${src}" alt="推文图片" loading="lazy" class="tweet-inline-img" />`);
+        unreferencedMedia.push(`<img src="${src}" alt="${imgAlt}" loading="lazy" class="tweet-inline-img" />`);
       }
     }
   }
@@ -360,6 +371,33 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
     .article-content pre code {
       background: none; padding: 0; border-radius: 0; color: inherit; font-size: 0.85em;
     }
+    /* WeChat code-snippet (legacy HTML before normalizeWechatCodeSnippets):
+       hide line-number <ul><li> discs and force each <code> line onto its own row */
+    .article-content .code-snippet__line-index,
+    .article-content ul.code-snippet__line-index {
+      display: none !important;
+      list-style: none !important;
+      margin: 0 !important;
+      padding: 0 !important;
+    }
+    .article-content .code-snippet__fix {
+      margin: 0 0 0.8em;
+      overflow: hidden;
+    }
+    .article-content .code-snippet__fix pre,
+    .article-content pre[class*="code-snippet"] {
+      margin-bottom: 0;
+    }
+    .article-content .code-snippet__fix pre > code,
+    .article-content pre[class*="code-snippet"] > code {
+      display: block;
+      background: none;
+      padding: 0;
+      border-radius: 0;
+      color: inherit;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
 
     /* ---- GFM: Blockquotes ---- */
     .article-content blockquote {
@@ -398,6 +436,7 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
       .article-title { font-size: 24px; }
       .article-content pre { padding: 12px; font-size: 0.825em; }
     }
+    .share-menu-wrap { position: relative; display: inline-flex; align-items: center; }
     .share-btn {
       width: 32px; height: 32px; border: none; border-radius: 50%;
       background: transparent; color: var(--text-secondary); cursor: pointer;
@@ -407,6 +446,37 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
       -webkit-tap-highlight-color: transparent;
     }
     .share-btn:hover { color: var(--text); }
+    .share-menu {
+      display: none; position: absolute; top: calc(100% + 6px); right: 0; z-index: 10050;
+      min-width: 148px; padding: 6px 0;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; box-shadow: 0 8px 28px var(--shadow-md, rgba(0,0,0,0.12));
+      overflow: hidden;
+    }
+    .share-menu.open { display: block; }
+    .share-menu-item {
+      display: flex; align-items: center; gap: 10px; width: 100%;
+      padding: 12px 16px; border: none; background: transparent;
+      color: var(--text); font-size: 14px; text-align: left; cursor: pointer;
+      font-family: inherit; line-height: 1.3;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .share-menu-item:hover, .share-menu-item:active { background: var(--bg); }
+    .share-menu-item svg { width: 16px; height: 16px; flex-shrink: 0; color: var(--text-secondary); }
+    .share-menu-backdrop {
+      display: none; position: fixed; inset: 0; z-index: 10040; background: transparent;
+    }
+    .share-menu-backdrop.open { display: block; }
+    .share-toast {
+      position: fixed; left: 50%; bottom: max(48px, env(safe-area-inset-bottom));
+      transform: translateX(-50%) translateY(12px); z-index: 11000;
+      padding: 10px 18px; border-radius: 20px;
+      background: rgba(0,0,0,0.82); color: #fff; font-size: 14px;
+      opacity: 0; pointer-events: none; transition: opacity 0.2s, transform 0.2s;
+      white-space: nowrap;
+    }
+    .share-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    [data-theme="dark"] .share-toast { background: rgba(255,255,255,0.92); color: #111; }
     .share-overlay {
       display: none; position: fixed; inset: 0; z-index: 10000;
       background: rgba(0,0,0,0.6); flex-direction: column;
@@ -452,6 +522,7 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
     .theme-btn:focus-visible,
     .refresh-btn:focus-visible,
     .share-btn:focus-visible,
+    .share-menu-item:focus-visible,
     .back-link:focus-visible,
     .share-save-btn:focus-visible,
     .share-close-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -535,12 +606,26 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12H6"/><path d="M12 5l-7 7 7 7"/></svg>
     </a>
     <div style="display:flex;align-items:center;gap:4px;">
-      <span class="share-btn" id="shareBtn" onclick="openSharePreview()" title="分享长图">${ICONS.share}</span>
+      <div class="share-menu-wrap">
+        <span class="share-btn" id="shareBtn" onclick="toggleShareMenu(event)" title="分享" role="button" aria-haspopup="menu" aria-expanded="false">${ICONS.share}</span>
+        <div class="share-menu" id="shareMenu" role="menu" aria-label="分享选项">
+          <button type="button" class="share-menu-item" role="menuitem" onclick="copyArticleLink()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            复制链接
+          </button>
+          <button type="button" class="share-menu-item" role="menuitem" onclick="shareAsLongImage()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+            分享长图
+          </button>
+        </div>
+      </div>
       <button class="theme-btn" onclick="toggleTheme()" title="切换主题">
         <svg id="theme-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
         <svg id="theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
       </button>
     </div>
+    <div class="share-menu-backdrop" id="shareMenuBackdrop" onclick="closeShareMenu()" aria-hidden="true"></div>
+    <div class="share-toast" id="shareToast" role="status" aria-live="polite"></div>
   </div>
     <article class="article-card">
       ${headerImgHtml}
@@ -613,6 +698,7 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
 var title = "${escapeHtml(title)}";
 var _shareImageDataUrl = null;
 var _html2canvasLoaded = false;
+var _shareToastTimer = 0;
 function _loadHtml2canvas(callback) {
   if (_html2canvasLoaded) { callback(); return; }
   if (typeof html2canvas !== 'undefined') { _html2canvasLoaded = true; callback(); return; }
@@ -625,9 +711,71 @@ function _loadHtml2canvas(callback) {
   };
   document.head.appendChild(s);
 }
+function showShareToast(msg) {
+  var t = document.getElementById('shareToast');
+  if (!t) return;
+  t.textContent = msg || '';
+  t.classList.add('show');
+  clearTimeout(_shareToastTimer);
+  _shareToastTimer = setTimeout(function() { t.classList.remove('show'); }, 1600);
+}
+function toggleShareMenu(e) {
+  if (e) { e.preventDefault(); e.stopPropagation(); }
+  var menu = document.getElementById('shareMenu');
+  if (!menu) return;
+  if (menu.classList.contains('open')) closeShareMenu();
+  else openShareMenu();
+}
+function openShareMenu() {
+  var menu = document.getElementById('shareMenu');
+  var backdrop = document.getElementById('shareMenuBackdrop');
+  var btn = document.getElementById('shareBtn');
+  if (menu) menu.classList.add('open');
+  if (backdrop) backdrop.classList.add('open');
+  if (btn) btn.setAttribute('aria-expanded', 'true');
+}
+function closeShareMenu() {
+  var menu = document.getElementById('shareMenu');
+  var backdrop = document.getElementById('shareMenuBackdrop');
+  var btn = document.getElementById('shareBtn');
+  if (menu) menu.classList.remove('open');
+  if (backdrop) backdrop.classList.remove('open');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+function copyArticleLink() {
+  var url = window.location.href.split('#')[0];
+  closeShareMenu();
+  function ok() { showShareToast('链接已复制'); }
+  function fail() {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = url;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      var copied = document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (copied) { ok(); return; }
+    } catch (err) {}
+    showShareToast('复制失败，请手动复制地址栏');
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(ok).catch(fail);
+  } else {
+    fail();
+  }
+}
+function shareAsLongImage() {
+  closeShareMenu();
+  openSharePreview();
+}
 function openSharePreview() {
   var overlay = document.getElementById('shareOverlay');
   if (!overlay) return;
+  closeShareMenu();
   overlay.style.display = 'flex';
   var previewBody = document.getElementById('sharePreviewBody');
   if (!previewBody) return;
@@ -678,6 +826,14 @@ function saveShareImage() {
   else if(window.matchMedia('(prefers-color-scheme:dark)').matches) document.documentElement.setAttribute('data-theme','dark');
   updateThemeIcon();
 })();
+function refreshPage(btn) {
+  if (btn && btn.classList) {
+    btn.classList.add('spinning');
+    setTimeout(function() { location.reload(); }, 180);
+  } else {
+    location.reload();
+  }
+}
 function toggleTheme() {
   var c = document.documentElement.getAttribute('data-theme');
   var n = c === 'dark' ? 'light' : 'dark';
@@ -696,12 +852,22 @@ function updateThemeIcon() {
   if (hlLight) hlLight.disabled = isDark;
   if (hlDark) hlDark.disabled = !isDark;
 }
-// Set AI button href dynamically with context article on page load
+// Set AI button href + prefetch recommended questions while user reads article
 (function() {
   function setAiHref() {
     var ctx = decodeURIComponent(window.location.pathname).replace(/^\\/articles\\//, '');
     var btn = document.getElementById('askAiBtn');
     if (btn && ctx) btn.href = '/qa?context=' + encodeURIComponent(ctx) + '&new=1';
+    // Warm suggestions cache so /qa?context=… opens with questions ready
+    if (ctx && !window.__qaSuggestPrefetched) {
+      window.__qaSuggestPrefetched = true;
+      try {
+        fetch('/api/qa/suggestions?context=' + encodeURIComponent(ctx), {
+          credentials: 'same-origin',
+          cache: 'no-store'
+        }).catch(function() {});
+      } catch (e) {}
+    }
   }
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', setAiHref);
@@ -962,7 +1128,10 @@ function renderIndexHtml(
 ): string {
   const buildList = (articles: ArticleMeta[]) =>
     articles.map((a) => {
-      const displayTitle = a.title.length > 80 ? a.title.substring(0, 80) + '...' : a.title;
+      // Normalize before escape so stacked &amp;amp; in meta never double-escapes on index
+      const plainTitle = normalizeScrapedText(a.title || '');
+      const plainAuthor = normalizeAuthorField(a.author || '');
+      const displayTitle = plainTitle.length > 80 ? plainTitle.substring(0, 80) + '...' : plainTitle;
       const pinnedBadge = a.pinned ? '<span class="pinned-badge">置顶</span>' : '';
       const unreadDot = a.unread ? '<span class="unread-dot"></span>' : '';
       const id = a.fileName.replace(/\.html$/, '');
@@ -977,7 +1146,7 @@ function renderIndexHtml(
                   </div>
                   <div class="article-meta">
                     <img src="${escapeHtml(a.authorAvatar || 'https://unavatar.io/x/' + a.authorHandle)}" alt="" class="meta-avatar" loading="lazy" />
-                    <span class="meta-author">${escapeHtml(a.author)}</span>
+                    <span class="meta-author">${escapeHtml(plainAuthor)}</span>
                     <span class="meta-time">收藏于 ${a.savedDate.substring(5)} · 更新于 ${a.tweetDate.substring(5)}</span>
                   </div>
                   ${(a.sourceType !== 'wechat' && a.sourceType !== 'webpage' && (Number(a.replies) > 0 || Number(a.retweets) > 0 || Number(a.likes) > 0)) ? `<div class="article-stats">
@@ -1075,9 +1244,7 @@ function renderIndexHtml(
       line-height: 1.7;
     }
     body.sidebar-open { overflow: hidden; }
-    body.sidebar-open .nav-bar {
-      display: none !important;
-    }
+    /* Do NOT display:none nav — reflows list mid-animation (jank vs QA). */
     .page-wrapper { overflow-x: hidden; position: relative; min-height: 100vh; min-height: 100dvh; }
     .container { max-width: 740px; margin: 0 auto; padding: 0 16px 40px; }
     /* Solid nav bar for flush top on iOS Safari */
@@ -1260,7 +1427,10 @@ function renderIndexHtml(
     .swipe-btn.read { background: #7d93ad; }
     .swipe-btn.source { background: #888; }
     .swipe-btn.delete { background: #fa5151; }
-    .refresh-btn { display: none; }
+    /* 刷新路径占满 viewBox，比太阳略「显大」→ 用 15px 对齐视觉重量 */
+    .refresh-btn svg { width: 15px; height: 15px; }
+    .refresh-btn.spinning svg { animation: refresh-spin 0.6s linear; }
+    @keyframes refresh-spin { to { transform: rotate(360deg); } }
     @media (max-width: 480px) {
       .nav-bar { padding: max(4px, env(safe-area-inset-top)) 12px 8px; }
       .nav-bar .nav-title { font-size: 17px; }
@@ -1269,7 +1439,6 @@ function renderIndexHtml(
       .article-link { padding: 16px 0 16px 16px; }
       .item-actions { padding: 16px 12px 16px 4px; }
       .more-btn { display: none; }
-      .refresh-btn { display: none; }
     }
     @media (min-width: 481px) {
       .swipe-actions { display: none !important; }
@@ -1302,14 +1471,20 @@ function renderIndexHtml(
       background: var(--surface);
       z-index: 1000;
       border: none;
-      box-shadow: none;
       outline: none;
-      left: calc(0px - var(--sidebar-w));
-      transition: left 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+      /* Match QA: GPU transform only (never animate left/width/height) */
+      -webkit-transform: translate3d(-100%, 0, 0);
+      transform: translate3d(-100%, 0, 0);
+      transition: transform 0.25s ease;
+      will-change: transform;
+      -webkit-backface-visibility: hidden;
+      backface-visibility: hidden;
+      box-shadow: 2px 0 16px var(--shadow-sm);
       overflow: visible;
     }
     .sidebar.open {
-      left: 0;
+      -webkit-transform: translate3d(0, 0, 0);
+      transform: translate3d(0, 0, 0);
     }
     .sidebar::before {
       content: '';
@@ -1342,7 +1517,7 @@ function renderIndexHtml(
       width: auto;
       height: calc(100% + env(safe-area-inset-top, 0px));
       height: calc(100dvh + env(safe-area-inset-top, 0px));
-      background: rgba(0, 0, 0, 0.35);
+      background: rgba(0, 0, 0, 0.45);
       z-index: 999;
       opacity: 0;
       pointer-events: none;
@@ -1454,7 +1629,10 @@ function renderIndexHtml(
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
     </button>
     <div class="nav-title" style="flex:1">开卷有益</div>
-    <button class="theme-btn" onclick="toggleTheme()" title="切换主题">
+    <button class="refresh-btn" type="button" onclick="refreshPage(this)" title="刷新" aria-label="刷新">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+    </button>
+    <button class="theme-btn" onclick="toggleTheme()" title="切换主题" aria-label="切换主题">
       <svg id="theme-icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
       <svg id="theme-icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
     </button>
@@ -2009,18 +2187,22 @@ function openSidebar() {
   document.getElementById('sidebar').classList.add('open');
   document.getElementById('sidebarOverlay').classList.add('show');
   document.body.classList.add('sidebar-open');
-  _setThemeColorForSidebar(true);
+  // Defer theme-color so first paint of transform is not blocked by chrome repaint
+  requestAnimationFrame(function() { _setThemeColorForSidebar(true); });
 }
 function closeSidebar() {
   document.getElementById('sidebar').classList.remove('open');
   document.getElementById('sidebarOverlay').classList.remove('show');
   document.body.classList.remove('sidebar-open');
-  _setThemeColorForSidebar(false);
-  sidebarQuery = '';
-  sidebarPostResults = [];
-  var input = document.getElementById('sidebarSearch');
-  if (input) input.value = '';
-  renderSidebar();
+  requestAnimationFrame(function() { _setThemeColorForSidebar(false); });
+  // Match QA: only re-render after search state, and after slide finishes
+  if (sidebarQuery || sidebarPostResults.length > 0) {
+    sidebarQuery = '';
+    sidebarPostResults = [];
+    var input = document.getElementById('sidebarSearch');
+    if (input) input.value = '';
+    setTimeout(function() { renderSidebar(); }, 260);
+  }
 }
 // Swipe-left to close sidebar
 (function() {
@@ -2092,6 +2274,14 @@ function renderSidebar() {
   }
   list.innerHTML = html;
 }
+function refreshPage(btn) {
+  if (btn && btn.classList) {
+    btn.classList.add('spinning');
+    setTimeout(function() { location.reload(); }, 180);
+  } else {
+    location.reload();
+  }
+}
 function toggleTheme() {
   var c = document.documentElement.getAttribute('data-theme');
   var n = c === 'dark' ? 'light' : 'dark';
@@ -2110,6 +2300,15 @@ function updateThemeIcon() {
   if (hlLight) hlLight.disabled = isDark;
   if (hlDark) hlDark.disabled = !isDark;
 }
+// Prefetch global QA suggestions while user browses list (sidebar → /qa ready)
+(function() {
+  if (window.__qaGlobalPrefetched) return;
+  window.__qaGlobalPrefetched = true;
+  try {
+    fetch('/api/qa/suggestions', { credentials: 'same-origin', cache: 'no-store' })
+      .catch(function() {});
+  } catch (e) {}
+})();
 </script>
 </div>
 </body>
@@ -2149,20 +2348,111 @@ async function downloadAvatar(url: string, basePath: string): Promise<string | n
   }
 }
 
+/**
+ * Guess image extension from URL path / query (WeChat uses /0?wx_fmt=png).
+ * Prefer sniffing file magic after download — this is only an initial hint.
+ */
+export function guessImageExtFromUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    const wx = (u.searchParams.get('wx_fmt') || u.searchParams.get('tp') || '').toLowerCase();
+    if (wx === 'png' || wx === 'jpeg' || wx === 'jpg' || wx === 'gif' || wx === 'webp' || wx === 'svg') {
+      return wx === 'jpeg' ? '.jpg' : `.${wx}`;
+    }
+    // path like .../mmbiz_png/... or .../mmbiz_jpg/...
+    const pathHint = u.pathname.match(/mmbiz_(png|jpg|jpeg|gif|webp|svg)/i);
+    if (pathHint) {
+      const t = pathHint[1].toLowerCase();
+      return t === 'jpeg' ? '.jpg' : `.${t}`;
+    }
+    const ext = path.extname(u.pathname).toLowerCase();
+    if (ext && ext.length <= 5 && /^\.(png|jpe?g|gif|webp|svg|bmp|avif)$/.test(ext)) {
+      return ext === '.jpeg' ? '.jpg' : ext;
+    }
+  } catch { /* ignore */ }
+  return '.jpg';
+}
+
+/** Detect real image type from file header (WeChat often has no extension). */
+export function detectImageExtFromBuffer(buf: Buffer): string | null {
+  if (!buf || buf.length < 4) return null;
+  // PNG
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+    return '.png';
+  }
+  // JPEG
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return '.jpg';
+  // GIF
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return '.gif';
+  // WEBP: RIFF....WEBP
+  if (
+    buf.length >= 12 &&
+    buf[0] === 0x52 &&
+    buf[1] === 0x49 &&
+    buf[2] === 0x46 &&
+    buf[3] === 0x46 &&
+    buf[8] === 0x57 &&
+    buf[9] === 0x45 &&
+    buf[10] === 0x42 &&
+    buf[11] === 0x50
+  ) {
+    return '.webp';
+  }
+  // SVG (text) — browsers refuse <img src="….jpg"> when body is SVG
+  const head = buf.subarray(0, Math.min(buf.length, 256)).toString('utf8').trimStart();
+  if (head.startsWith('<svg') || head.startsWith('<?xml') || /^<svg[\s>]/i.test(head)) {
+    return '.svg';
+  }
+  return null;
+}
+
+/**
+ * After download, if magic bytes disagree with file extension, rename to match.
+ * Returns the final absolute path (may equal destPath).
+ */
+export function ensureImageExtMatchesContent(destPath: string): string {
+  try {
+    if (!fs.existsSync(destPath)) return destPath;
+    const buf = Buffer.alloc(256);
+    const fd = fs.openSync(destPath, 'r');
+    const n = fs.readSync(fd, buf, 0, 256, 0);
+    fs.closeSync(fd);
+    const detected = detectImageExtFromBuffer(buf.subarray(0, n));
+    if (!detected) return destPath;
+    const cur = path.extname(destPath).toLowerCase();
+    const curNorm = cur === '.jpeg' ? '.jpg' : cur;
+    if (curNorm === detected) return destPath;
+    const next = destPath.slice(0, destPath.length - cur.length) + detected;
+    if (fs.existsSync(next)) {
+      // Prefer the correctly-typed path; drop mislabeled one
+      try { fs.unlinkSync(destPath); } catch { /* ignore */ }
+      return next;
+    }
+    fs.renameSync(destPath, next);
+    return next;
+  } catch {
+    return destPath;
+  }
+}
+
 async function downloadFile(url: string, destPath: string, referer?: string): Promise<void> {
   // Feishu/Lark CDN often requires browser-like UA + Referer, otherwise returns 403 HTML.
+  // WeChat mmbiz CDN also prefers a page Referer.
   let ref = referer || '';
   try {
     const host = new URL(url).hostname.toLowerCase();
     if (!ref && /(feishu|lark|bytedance|feishucdn|larksuitecdn)/i.test(host)) {
       ref = 'https://www.feishu.cn/';
     }
+    if (!ref && /(qpic\.cn|mmbiz)/i.test(host)) {
+      ref = 'https://mp.weixin.qq.com/';
+    }
   } catch { /* ignore */ }
 
   const headers: Record<string, string> = {
     'User-Agent':
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+    Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
   };
   if (ref) headers.Referer = ref;
 
@@ -2175,6 +2465,7 @@ async function downloadFile(url: string, destPath: string, referer?: string): Pr
   });
 
   // Only reject non-media content types (HTML, JSON, etc.)
+  // Allow image/svg+xml and empty/octet-stream (WeChat sometimes omits type).
   const contentType = String(response.headers['content-type'] || '');
   if (contentType.startsWith('text/html') || contentType.startsWith('application/json')) {
     throw new Error('Not a media file: ' + contentType);
@@ -2226,6 +2517,8 @@ export function isTweetChanged(tweetId: string, tweet: FetchedTweet): boolean {
 
 export async function saveTweet(tweet: FetchedTweet): Promise<string> {
   ensureDirs();
+  // Defense in depth: every source path normalizes before disk / meta write
+  tweet = normalizeTweetFields(tweet);
   const fileNameBase = sanitizeFileName(tweet.author.screen_name) + '_' + tweet.id;
   const htmlFileName = fileNameBase + '.html';
   const htmlPath = path.join(ARTICLES_DIR, htmlFileName);
@@ -2263,21 +2556,29 @@ export async function saveTweet(tweet: FetchedTweet): Promise<string> {
   const imgReferer = tweet.url || undefined;
   for (let i = 0; i < photos.length; i++) {
     const photo = photos[i];
-    let ext = '.jpg';
-    try {
-      const p = new URL(photo.url).pathname;
-      ext = path.extname(p) || '.jpg';
-      // Feishu CDN paths often have no extension
-      if (!ext || ext === '.' || ext.length > 5) ext = '.jpg';
-    } catch {
-      ext = '.jpg';
+    // Initial ext from URL (wx_fmt / mmbiz_png / path); corrected by magic sniff after download
+    let ext = guessImageExtFromUrl(photo.url);
+    let imgFileName = fileNameBase + '_img' + i + ext;
+    let imgPath = path.join(IMAGES_DIR, imgFileName);
+
+    // Already on disk under any common ext? Reuse + fix extension if mislabeled
+    if (!(fs.existsSync(imgPath) && fs.statSync(imgPath).size > 0)) {
+      for (const tryExt of ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg']) {
+        const cand = path.join(IMAGES_DIR, fileNameBase + '_img' + i + tryExt);
+        if (fs.existsSync(cand) && fs.statSync(cand).size > 0) {
+          imgPath = cand;
+          imgFileName = path.basename(cand);
+          break;
+        }
+      }
     }
-    const imgFileName = fileNameBase + '_img' + i + ext;
-    const imgPath = path.join(IMAGES_DIR, imgFileName);
+
     if (fs.existsSync(imgPath) && fs.statSync(imgPath).size > 0) {
-      localImagePaths[i] = '../images/' + imgFileName;
+      const fixed = ensureImageExtMatchesContent(imgPath);
+      localImagePaths[i] = '../images/' + path.basename(fixed);
       continue;
     }
+
     try {
       await downloadFile(photo.url, imgPath, imgReferer);
       // Detect real type if extension was wrong and file is tiny/empty error page
@@ -2286,7 +2587,9 @@ export async function saveTweet(tweet: FetchedTweet): Promise<string> {
         fs.unlinkSync(imgPath);
         throw new Error('Downloaded file too small (likely blocked)');
       }
-      localImagePaths[i] = '../images/' + imgFileName;
+      // SVG mislabeled as .jpg → naturalWidth 0 in browser; PNG-as-jpg often works but fix anyway
+      const fixed = ensureImageExtMatchesContent(imgPath);
+      localImagePaths[i] = '../images/' + path.basename(fixed);
     } catch (err) {
       console.error(`[save] Failed to download image ${i}: ${photo.url} — ${err instanceof Error ? err.message : err}`);
     }
