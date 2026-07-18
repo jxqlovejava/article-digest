@@ -39,9 +39,20 @@ docker build --no-cache -t "$IMAGE:$NEXT" "$BASE"
 # Start new
 echo "[deploy] Starting app-$NEXT..."
 docker rm -f "app-$NEXT" 2>/dev/null || true
+# Secrets live in $BASE/.env (LLM_API_KEY etc). Required for Q&A.
+ENV_FILE="$BASE/.env"
+if [ ! -f "$ENV_FILE" ]; then
+    echo "[deploy] WARN: missing $ENV_FILE — LLM Q&A will fail until LLM_API_KEY is set"
+fi
+ENV_FILE_ARG=""
+if [ -f "$ENV_FILE" ]; then
+    ENV_FILE_ARG="--env-file $ENV_FILE"
+fi
+# shellcheck disable=SC2086
 docker run -d --name "app-$NEXT" --network "$NET" \
     -v "$DATA:/app/data" \
     --add-host host.docker.internal:host-gateway \
+    $ENV_FILE_ARG \
     -e PORT=3000 -e USE_PROXY=1 \
     -e HTTPS_PROXY=http://host.docker.internal:7890 \
     -e HTTP_PROXY=http://host.docker.internal:7890 \

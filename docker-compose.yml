@@ -20,6 +20,9 @@ services:
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    env_file:
+      - path: .env
+        required: false
     environment:
       - PORT=3000
       - USE_PROXY=1
@@ -37,6 +40,9 @@ services:
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    env_file:
+      - path: .env
+        required: false
     environment:
       - PORT=3000
       - USE_PROXY=1

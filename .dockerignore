@@ -1,0 +1,10 @@
+node_modules
+data
+dist
+.git
+.omc
+.claude
+*.log
+.DS_Store
+.planning
+AGENTS.md
