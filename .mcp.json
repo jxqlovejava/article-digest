@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "xarticle": {
+      "command": "npx",
+      "args": ["-y", "xarticle-mcp"]
+    }
+  }
+}
