@@ -28,3 +28,7 @@ export function parseTweetUrl(url: string): ParsedTweetUrl | null {
 export function getFxTwitterApiUrl(username: string, tweetId: string): string {
   return `https://api.fxtwitter.com/${username}/status/${tweetId}`;
 }
+
+export function generateWebPageId(url: string): string {
+  return Buffer.from(url).toString('base64url').substring(0, 24);
+}

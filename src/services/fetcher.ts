@@ -2,6 +2,16 @@ import axios from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { getFxTwitterApiUrl, parseTweetUrl, generateWebPageId } from '../utils/url';
 import type { ParsedTweetUrl } from '../utils/url';
+import { normalizeScrapedText, normalizeAuthorField } from '../utils/textDecode';
+import {
+  htmlToMarkdown,
+  cleanWebpageMarkdown,
+  contentScore,
+  extractMarkdownImages,
+  pushPhoto as pushPhotoShared,
+  type PhotoSink,
+} from './htmlToMarkdown';
+import { convertHtmlWithMarkitdown } from './markitdownBridge';
 
 const PROXY_URL = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || 'http://127.0.0.1:7890';
 const USE_PROXY = process.env.USE_PROXY === '1' || process.env.USE_PROXY === 'true';
@@ -175,16 +185,86 @@ const DEFAULT_FEATURES = {
 async function expandQuoteOrRetweet(tweet: any, depth = 0): Promise<any> {
   if (depth > 1 || !tweet) return tweet;
 
-  // Quote tweet: commentary is short/empty but quote contains the real content.
-  if (tweet.quote?.text && (!tweet.text || tweet.text.trim().length <= 30)) {
-    const q = tweet.quote;
-    const quoteBlock = `> ${q.author?.name || ''} @${q.author?.screen_name || ''}\n> ${q.text}`;
-    return {
-      ...tweet,
-      text: tweet.text?.trim() ? `${tweet.text.trim()}\n\n${quoteBlock}` : quoteBlock,
-      title: deriveTitle(q.text, 80) || tweet.title || '',
-      media: tweet.media || q.media,
-    };
+  // Quote tweet: always expand the quoted original alongside the commentary.
+  if (tweet.quote?.url) {
+    let q = tweet.quote;
+
+    // If the quote carries little or no text (often just a t.co card URL),
+    // fetch the original tweet/article so we can include its real content.
+    if (!q.text || q.text.trim().length <= 30) {
+      try {
+        const parsed = parseTweetUrl(q.url);
+        if (parsed) {
+          const original = await fetchFromFxTwitter(parsed);
+          q = await expandQuoteOrRetweet(original, depth + 1);
+        }
+      } catch {
+        // Keep the quote as-is; the card preview is still better than nothing.
+      }
+    }
+
+    if (q.text?.trim()) {
+      const comment = tweet.text?.trim() || '';
+      const originalText = q.text.trim();
+      const separator = '\n\n**以下是原文：**\n\n';
+
+      // Merge quote media into the main tweet and re-index any [IMG:N]/[VIDEO:N]
+      // markers so they point at the appended photos/videos.
+      const mergedPhotos: TweetPhoto[] = [...(tweet.media?.photos || [])];
+      const mergedVideos: TweetVideo[] = [...(tweet.media?.videos || [])];
+
+      let reindexedOriginal = originalText;
+      reindexedOriginal = reindexedOriginal.replace(/\[IMG:(\d+)\]/g, (_m: string, idx: string) => {
+        const i = parseInt(idx, 10);
+        const photo = q.media?.photos?.[i];
+        if (photo) {
+          const newIdx = mergedPhotos.length;
+          mergedPhotos.push(photo);
+          return `[IMG:${newIdx}]`;
+        }
+        return '';
+      });
+      reindexedOriginal = reindexedOriginal.replace(/\[VIDEO:(\d+)\]/g, (_m: string, idx: string) => {
+        const i = parseInt(idx, 10);
+        const video = q.media?.videos?.[i];
+        if (video) {
+          const newIdx = mergedVideos.length;
+          mergedVideos.push(video);
+          return `[VIDEO:${newIdx}]`;
+        }
+        return '';
+      });
+
+      // Append any unreferenced quote photos/videos as new markers.
+      if (q.media?.photos) {
+        for (const photo of q.media.photos) {
+          if (!mergedPhotos.some(p => p.url === photo.url)) {
+            mergedPhotos.push(photo);
+            reindexedOriginal += `\n[IMG:${mergedPhotos.length - 1}]`;
+          }
+        }
+      }
+      if (q.media?.videos) {
+        for (const video of q.media.videos) {
+          if (!mergedVideos.some(v => v.url === video.url)) {
+            mergedVideos.push(video);
+            reindexedOriginal += `\n[VIDEO:${mergedVideos.length - 1}]`;
+          }
+        }
+      }
+
+      const fullText = comment ? `${comment}${separator}${reindexedOriginal}` : reindexedOriginal;
+
+      return {
+        ...tweet,
+        text: fullText,
+        title: q.title || deriveTitle(q.text, 80) || tweet.title || '',
+        media: {
+          photos: mergedPhotos,
+          videos: mergedVideos,
+        },
+      };
+    }
   }
 
   // No-comment retweet: FxTwitter returns empty text and raw_text contains a t.co link.
@@ -336,14 +416,23 @@ export async function fetchLikes(count = 30): Promise<string[]> {
   }
 }
 
-/** Derive a title from tweet text. Merges continuation lines (ending in ，、；：) up to maxLen. */
+/** Derive a title from tweet text. Merges continuation lines (ending in ，、；：) up to maxLen.
+ *  Skips leading media markers like [IMG:0] / [VIDEO:0] so X Article cover images
+ *  don't become the article title. */
 export function deriveTitle(text: string, maxLen = 80): string {
   const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
   if (lines.length === 0) return '';
 
-  let title = lines[0];
+  // Skip leading image/video markers (e.g. X Article cover image)
+  let startIdx = 0;
+  while (startIdx < lines.length && /^\[(IMG|VIDEO):\d+\]$/.test(lines[startIdx])) {
+    startIdx++;
+  }
+  if (startIdx >= lines.length) return '';
+
+  let title = lines[startIdx];
   const continuationMarks = /[，、；：]$/;
-  let i = 1;
+  let i = startIdx + 1;
   while (i < lines.length && continuationMarks.test(title) && title.length < maxLen) {
     const combined = title + lines[i];
     if (combined.length <= maxLen) {
@@ -1001,6 +1090,100 @@ function extractUrlParam(url: string, param: string): string {
   }
 }
 
+/**
+ * WeChat official-account HTML encodes code blocks as:
+ *   <section class="code-snippet__fix">
+ *     <ul class="code-snippet__line-index"><li></li>…</ul>  <!-- empty lis -->
+ *     <pre data-lang="…"><code>line1</code><code>line2</code>…</pre>
+ *   </section>
+ * Without WeChat's CSS:
+ *   1) empty <li>s render as browser disc bullets → vertical "• • •" above code
+ *   2) sibling <code> stay display:inline → all lines collapse onto one row
+ * Convert to a single standard fenced-style <pre><code> with real newlines.
+ */
+export function normalizeWechatCodeSnippets(html: string): string {
+  if (!html || !/code-snippet__fix/i.test(html)) return html;
+
+  const decodeEntities = (s: string): string =>
+    s
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+      .replace(/&apos;/gi, "'")
+      .replace(/&amp;/gi, '&');
+
+  const escapeText = (s: string): string =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  const lineToText = (inner: string): string => {
+    const plain = inner
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/?span\b[^>]*>/gi, '')
+      .replace(/<\/?[^>]+>/g, '');
+    return decodeEntities(plain).replace(/\u00a0/g, ' ');
+  };
+
+  // Prefer full section (drops line-index ul). Fallback: bare pre with multi-code lines.
+  let out = html.replace(
+    /<section\b[^>]*\bcode-snippet__fix\b[^>]*>([\s\S]*?)<\/section>/gi,
+    (_full, sectionInner: string) => {
+      const preMatch = sectionInner.match(/<pre\b([^>]*)>([\s\S]*?)<\/pre>/i);
+      if (!preMatch) return sectionInner; // drop broken wrapper, keep body
+      return flattenWechatPre(preMatch[1], preMatch[2], lineToText, escapeText);
+    }
+  );
+
+  // Residual bare pre.code-snippet__* still multi-code (no section wrapper)
+  out = out.replace(
+    /<pre\b([^>]*\bcode-snippet__[^>]*)>([\s\S]*?)<\/pre>/gi,
+    (_full, attrs: string, preInner: string) => {
+      if (!/<code\b/i.test(preInner)) return _full;
+      // already single code with newlines? keep if only one code child
+      const codes = preInner.match(/<code\b/gi);
+      if (!codes || codes.length <= 1) return _full;
+      return flattenWechatPre(attrs, preInner, lineToText, escapeText);
+    }
+  );
+
+  // Orphan line-index lists (should be gone with section replace; belt-and-suspenders)
+  out = out.replace(
+    /<ul\b[^>]*\bcode-snippet__line-index\b[^>]*>[\s\S]*?<\/ul>/gi,
+    ''
+  );
+
+  return out;
+}
+
+function flattenWechatPre(
+  attrs: string,
+  preInner: string,
+  lineToText: (inner: string) => string,
+  escapeText: (s: string) => string
+): string {
+  const lines: string[] = [];
+  const re = /<code\b[^>]*>([\s\S]*?)<\/code>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(preInner)) !== null) {
+    lines.push(lineToText(m[1]));
+  }
+  if (lines.length === 0) {
+    // No code children — strip tags, keep text
+    const text = lineToText(preInner);
+    if (!text.trim()) return '';
+    return `<pre><code>${escapeText(text)}</code></pre>`;
+  }
+  const lang =
+    (attrs.match(/\bdata-lang=["']([^"']+)["']/i) || [])[1] ||
+    (attrs.match(/\blanguage-([a-z0-9_+-]+)/i) || [])[1] ||
+    '';
+  const classAttr = lang ? ` class="language-${lang.replace(/[^a-zA-Z0-9_+-]/g, '')}"` : '';
+  const dataAttr = lang ? ` data-lang="${lang.replace(/"/g, '')}"` : '';
+  const body = escapeText(lines.join('\n'));
+  return `<pre${classAttr}${dataAttr}><code>${body}</code></pre>`;
+}
+
 export async function fetchWechatArticle(url: string): Promise<FetchedTweet> {
   const response = await axios.get(url, {
     headers: {
@@ -1014,15 +1197,16 @@ export async function fetchWechatArticle(url: string): Promise<FetchedTweet> {
 
   const html = response.data as string;
 
-  // Title: var msg_title = 'xxx'.html(false)
+  // Title: var msg_title = htmlDecode('xxx') — string inside is still entity-encoded;
+  // WeChat runs htmlDecode at runtime; we must normalizeScrapedText ourselves.
   let title = '';
   const titleMatch = html.match(/var msg_title\s*=\s*htmlDecode\(['"](.+?)['"]\)/);
   if (titleMatch) {
-    title = titleMatch[1].replace(/\.html\(false\)$/, '');
+    title = titleMatch[1];
   } else {
     const titleMatch2 = html.match(/var msg_title\s*=\s*['"](.+?)['"]/);
     if (titleMatch2) {
-      title = titleMatch2[1].replace(/\.html\(false\)$/, '');
+      title = titleMatch2[1];
     }
   }
   if (!title) {
@@ -1031,12 +1215,16 @@ export async function fetchWechatArticle(url: string): Promise<FetchedTweet> {
       title = h1Match[1].replace(/<[^>]+>/g, '').trim();
     }
   }
-  // Decode unicode escapes
-  title = title.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+  // og:title fallback
+  if (!title) {
+    const ogTitle = html.match(/<meta[^>]*property="og:title"[^>]*content="([^"]*)"/i);
+    if (ogTitle) title = ogTitle[1];
+  }
+  title = normalizeScrapedText(title);
 
-  // Author
+  // Author — same htmlDecode / entity issue as title (e.g. 营销&amp;交易技术)
   let author = '';
-  const authorMeta = html.match(/<meta[^>]*property="og:article:author"[^>]*content="(.*?)"/);
+  const authorMeta = html.match(/<meta[^>]*property="og:article:author"[^>]*content="([^"]*)"/i);
   if (authorMeta) {
     author = authorMeta[1];
   } else {
@@ -1050,14 +1238,19 @@ export async function fetchWechatArticle(url: string): Promise<FetchedTweet> {
       }
     }
   }
+  // profile_nickname / nick_name variants
+  if (!author) {
+    const nick2 = html.match(/var\s+(?:profile_nickname|nick_name)\s*=\s*(?:htmlDecode\()?['"](.+?)['"]\)?/);
+    if (nick2) author = nick2[1];
+  }
+  author = normalizeAuthorField(author);
 
   // Author avatar: try round_head_img (from cgiDataNew) first, then head_img_url
   let avatarUrl = '';
   const roundImgMatch = html.match(/(?:round_head_img|hd_head_img|head_img_url)\s*[=:]\s*['"]([^'"]+)['"]/);
   if (roundImgMatch) {
-    avatarUrl = roundImgMatch[1];
+    avatarUrl = normalizeScrapedText(roundImgMatch[1]);
     if (avatarUrl.startsWith('//')) avatarUrl = 'https:' + avatarUrl;
-    avatarUrl = avatarUrl.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
   }
 
   // Publish time (Unix timestamp)
@@ -1114,6 +1307,10 @@ export async function fetchWechatArticle(url: string): Promise<FetchedTweet> {
     contentHtml = contentMatch[1].trim();
   }
 
+  // WeChat code blocks: multi-<code> lines + line-index <ul><li> bullets.
+  // Without WeChat CSS those empty <li>s render as disc dots and lines collapse.
+  contentHtml = normalizeWechatCodeSnippets(contentHtml);
+
   // Strip inline font-size from WeChat content (overrides CSS).
   // font-size values are plain numbers/units — safe to strip with simple regex.
   // font-family is deliberately NOT stripped: font names often contain quotes
@@ -1166,14 +1363,15 @@ export async function fetchWechatArticle(url: string): Promise<FetchedTweet> {
 
   const id = extractWechatId(url);
 
+  const authorFinal = author || '微信公众号';
   return {
     id,
     url,
     text,
     title: title || '微信公众号文章',
     author: {
-      name: author || '微信公众号',
-      screen_name: author || 'wechat',
+      name: authorFinal,
+      screen_name: authorFinal === '微信公众号' ? 'wechat' : authorFinal,
       avatar_url: avatarUrl,
     },
     created_at: new Date(createdTimestamp * 1000).toUTCString(),
@@ -1228,166 +1426,9 @@ function extractWechatUrlFromText(text: string): string | null {
   return null;
 }
 
-/**
- * Feishu/Jina markdown is noisy: shell chrome, TOC, login prompts, zero-width
- * spaces, and truncated deferred blocks. Clean before rendering.
- */
-function cleanWebpageMarkdown(text: string, opts: { isFeishu?: boolean } = {}): string {
-  let t = text;
-
-  // Normalize zero-width / special spaces Feishu injects into every line
-  t = t.replace(/[\u200b\u200c\u200d\ufeff]/g, '');
-  t = t.replace(/\u00a0/g, ' ');
-
-  // Drop Jina metadata headers if still present mid-body
-  t = t.replace(/^Title:\s*.+$/gm, '');
-  t = t.replace(/^URL Source:\s*.+$/gm, '');
-  t = t.replace(/^Published Time:\s*.+$/gm, '');
-  t = t.replace(/^Markdown Content:\s*$/gim, '');
-  t = t.replace(/^Warning:\s*.+$/gm, '');
-
-  if (opts.isFeishu) {
-    const feishuNoise = [
-      /^#\s*Feishu Docs\s*$/gim,
-      /^Error accessing wiki space\s*$/gim,
-      /^Public access\s*$/gim,
-      /^Table of contents.*$/gim,
-      /^header-v2\s*$/gim,
-      /^Last updated:.*$/gim,
-      /^Log In or Sign Up\s*$/gim,
-      /^Help Center\s*$/gim,
-      /^Keyboard Shortcuts\s*$/gim,
-      /^Share\s*$/gim,
-      /^Type\s*['']?\/['']?\s*for commands\s*$/gim,
-      /^Modified\s+(Yesterday|Today|\d.+$)/gim,
-      /^✅\s*Copied\s*$/gim,
-      /^Copy link\s*$/gim,
-      /^Open in( app| desktop)?\s*$/gim,
-    ];
-    for (const re of feishuNoise) t = t.replace(re, '');
-
-    // Drop pure navigation TOC list that only links back into the same wiki page
-    t = t.replace(
-      /(?:^|\n)(?:\s*[-*]\s+\[[^\]]+\]\(https?:\/\/[^)]*(?:feishu\.cn|larksuite\.com)[^)]*\)\s*\n){2,}/g,
-      '\n'
-    );
-  }
-
-  // Promote Chinese section titles (一、xxx) to markdown headings when bare
-  t = t.replace(
-    /^(?!#\s)([一二三四五六七八九十百千]+、[^\n]{2,40})\s*$/gm,
-    '## $1'
-  );
-
-  // Collapse empty / whitespace-only lines introduced by ZWSP cleanup
-  t = t.replace(/[ \t]+\n/g, '\n');
-  t = t.replace(/\n{3,}/g, '\n\n').trim();
-  return t;
-}
-
-/** True for Feishu/Lark UI chrome assets we never want to archive. */
-function isChromeImageUrl(imgUrl: string): boolean {
-  return /feishu-static|marketplaceicon|dashboard_dm|shortcut_|appicon|favicon|logo[_-]?light|logo[_-]?dark|empty[_-]?state|placeholder|avatar[_-]?default|loading[_-]?icon|\/static\/svg\//i.test(
-    imgUrl
-  );
-}
-
+/** Local wrapper: shared pushPhoto returns markers into TweetPhoto[]. */
 function pushPhoto(photos: TweetPhoto[], imgUrl: string): string {
-  const cleaned = imgUrl.trim().replace(/^<|>$/g, '');
-  if (!cleaned || cleaned.startsWith('data:') || isChromeImageUrl(cleaned)) return '';
-  const existing = photos.findIndex(p => p.url === cleaned);
-  if (existing >= 0) return `[IMG:${existing}]`;
-  photos.push({ url: cleaned, width: 0, height: 0 });
-  return `[IMG:${photos.length - 1}]`;
-}
-
-function extractMarkdownImages(text: string): { text: string; photos: TweetPhoto[] } {
-  const photos: TweetPhoto[] = [];
-  // Markdown images: ![alt](url) and also <url> form
-  let next = text.replace(
-    /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g,
-    (_m, _desc, imgUrl: string) => pushPhoto(photos, imgUrl) || ''
-  );
-  // HTML <img> that sometimes leaks into jina markdown
-  next = next.replace(
-    /<img\b[^>]*?\b(?:src|data-src|data-origin-src)=["']([^"']+)["'][^>]*>/gi,
-    (_m, imgUrl: string) => pushPhoto(photos, imgUrl) || ''
-  );
-  // Bare image URLs on their own line (incl. feishu CDN without extension)
-  next = next.replace(
-    /^(https?:\/\/[^\s]+\.(?:png|jpe?g|gif|webp|bmp|svg)(?:\?[^\s]*)?)\s*$/gim,
-    (_m, imgUrl: string) => pushPhoto(photos, imgUrl) || ''
-  );
-  // Feishu/Lark image CDN lines without file extension
-  next = next.replace(
-    /^(https?:\/\/(?:[a-z0-9-]+\.)*(?:feishucdn\.com|larksuitecdn\.com|bytedance\.net|feishu\.cn|larksuite\.com)\/[^\s]+)\s*$/gim,
-    (_m, imgUrl: string) => {
-      if (/\.(?:css|js|woff2?|ttf|map)(?:\?|$)/i.test(imgUrl)) return '';
-      return pushPhoto(photos, imgUrl) || '';
-    }
-  );
-  return { text: next, photos };
-}
-
-/** Score a candidate body: longer text + more images wins. */
-function contentScore(text: string, photoCount: number): number {
-  const plain = text.replace(/\[IMG:\d+\]/g, '').replace(/\s+/g, ' ').trim();
-  return plain.length + photoCount * 400;
-}
-
-/** Convert HTML fragment → markdown-ish text, preserving images as [IMG:N]. */
-function htmlFragmentToMarkdown(html: string, photos: TweetPhoto[]): string {
-  let h = html;
-  // Drop scripts/styles/nav chrome
-  h = h.replace(/<script[\s\S]*?<\/script>/gi, '');
-  h = h.replace(/<style[\s\S]*?<\/style>/gi, '');
-  h = h.replace(/<noscript[\s\S]*?<\/noscript>/gi, '');
-  h = h.replace(/<!--[\s\S]*?-->/g, '');
-
-  // Images: data-src / data-origin-src / src
-  h = h.replace(/<img\b[^>]*>/gi, (tag) => {
-    const m =
-      tag.match(/\bdata-origin-src=["']([^"']+)["']/i) ||
-      tag.match(/\bdata-src=["']([^"']+)["']/i) ||
-      tag.match(/\bsrc=["']([^"']+)["']/i);
-    if (!m) return '';
-    let u = m[1];
-    if (u.startsWith('//')) u = 'https:' + u;
-    return pushPhoto(photos, u) || '';
-  });
-
-  // Headings
-  h = h.replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi, (_m, level, inner) => {
-    const t = inner.replace(/<[^>]+>/g, '').trim();
-    if (!t) return '\n';
-    return `\n${'#'.repeat(Math.min(6, parseInt(level, 10)))} ${t}\n\n`;
-  });
-  // Lists
-  h = h.replace(/<li\b[^>]*>([\s\S]*?)<\/li>/gi, (_m, inner) => {
-    const t = inner.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-    return t ? `- ${t}\n` : '';
-  });
-  // Paragraphs / breaks
-  h = h.replace(/<\/p>/gi, '\n\n');
-  h = h.replace(/<br\s*\/?>/gi, '\n');
-  h = h.replace(/<\/div>/gi, '\n');
-  h = h.replace(/<\/tr>/gi, '\n');
-  h = h.replace(/<\/(h[1-6]|li|ul|ol|table|section|article)>/gi, '\n');
-  // Links keep text
-  h = h.replace(/<a\b[^>]*>([\s\S]*?)<\/a>/gi, (_m, inner) => inner.replace(/<[^>]+>/g, ''));
-  // Strip remaining tags
-  h = h.replace(/<[^>]+>/g, '');
-  // Decode common entities
-  h = h
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)));
-  return h.replace(/\n{3,}/g, '\n\n').trim();
+  return pushPhotoShared(photos as PhotoSink[], imgUrl);
 }
 
 async function fetchJina(url: string, format: 'markdown' | 'html'): Promise<string> {
@@ -1461,34 +1502,36 @@ function parseJinaMarkdownPayload(rawText: string, feishu: boolean): {
 
   const extracted = extractMarkdownImages(text);
   text = extracted.text.replace(/\n{3,}/g, '\n\n').trim();
-  return { title, text, photos: extracted.photos, publishTime };
+  return {
+    title,
+    text,
+    photos: extracted.photos as TweetPhoto[],
+    publishTime,
+  };
 }
 
-function parseHtmlPayload(rawHtml: string, feishu: boolean): {
-  title: string;
-  text: string;
-  photos: TweetPhoto[];
-} {
+function extractTitleFromHtml(rawHtml: string): string {
   let title = '';
-  const og = rawHtml.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)
-    || rawHtml.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']/i);
+  const og =
+    rawHtml.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i) ||
+    rawHtml.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']/i);
   if (og) title = og[1].trim();
   if (!title) {
     const t = rawHtml.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
     if (t) title = t[1].replace(/\s+/g, ' ').trim();
   }
-  title = title
+  return title
     .replace(/\s*[-|–—]\s*(Feishu Docs|飞书文档|飞书|Lark Docs)\s*$/i, '')
     .trim();
+}
 
-  const photos: TweetPhoto[] = [];
-  // Prefer main content regions when present
+/** Prefer main content regions; fall back to body. */
+function extractBodyHtml(rawHtml: string): string {
   const regionRes = [
     /<div[^>]*(?:class|id)=["'][^"']*(?:wiki-content|doc-content|docx-content|article-content|suite-content|page-block|render-unit-wrapper)[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi,
     /<article\b[^>]*>([\s\S]*?)<\/article>/gi,
     /<main\b[^>]*>([\s\S]*?)<\/main>/gi,
   ];
-  let bodyHtml = '';
   for (const re of regionRes) {
     const parts: string[] = [];
     let m: RegExpExecArray | null;
@@ -1496,29 +1539,67 @@ function parseHtmlPayload(rawHtml: string, feishu: boolean): {
     while ((m = r.exec(rawHtml)) !== null) {
       if (m[1] && m[1].length > 80) parts.push(m[1]);
     }
-    if (parts.length) {
-      bodyHtml = parts.join('\n');
-      break;
-    }
+    if (parts.length) return parts.join('\n');
   }
-  if (!bodyHtml || bodyHtml.length < 200) {
-    // Fallback: whole body
-    const body = rawHtml.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
-    bodyHtml = body ? body[1] : rawHtml;
-  }
+  const body = rawHtml.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
+  return body ? body[1] : rawHtml;
+}
 
-  let text = htmlFragmentToMarkdown(bodyHtml, photos);
-  // Also harvest any remaining img urls from full HTML that region missed
+/** HTML → MD via turndown (primary local converter). */
+function parseHtmlPayload(rawHtml: string, feishu: boolean): {
+  title: string;
+  text: string;
+  photos: TweetPhoto[];
+} {
+  const title = extractTitleFromHtml(rawHtml);
+  const photos: TweetPhoto[] = [];
+  const bodyHtml = extractBodyHtml(rawHtml);
+
+  let text = htmlToMarkdown(bodyHtml, photos as PhotoSink[]);
+  // Harvest remaining img urls from full HTML that region missed
   const imgRe = /(?:data-origin-src|data-src|src)=["'](https?:\/\/[^"']+)["']/gi;
   let im: RegExpExecArray | null;
   while ((im = imgRe.exec(rawHtml)) !== null) {
     pushPhoto(photos, im[1]);
   }
-  // Re-insert unreferenced photos at end so they still render
-  // (htmlFragment already inserted markers for in-region images)
   text = cleanWebpageMarkdown(text, { isFeishu: feishu });
   text = text.replace(/\n{3,}/g, '\n\n').trim();
   return { title, text, photos };
+}
+
+/**
+ * HTML → MD via Microsoft MarkItDown (optional A/B side-path).
+ * Falls back empty if Python/markitdown missing.
+ */
+async function parseHtmlWithMarkitdown(
+  rawHtml: string,
+  feishu: boolean,
+  sourceLabel: string
+): Promise<{
+  title: string;
+  text: string;
+  photos: TweetPhoto[];
+  source: string;
+} | null> {
+  const bodyHtml = extractBodyHtml(rawHtml);
+  const title = extractTitleFromHtml(rawHtml);
+  const result = await convertHtmlWithMarkitdown(bodyHtml || rawHtml);
+  if (!result.ok) {
+    console.warn(`[webpage] markitdown (${sourceLabel}) skipped: ${result.error}`);
+    return null;
+  }
+  let text = cleanWebpageMarkdown(result.markdown, { isFeishu: feishu });
+  const extracted = extractMarkdownImages(text);
+  text = extracted.text.replace(/\n{3,}/g, '\n\n').trim();
+  console.log(
+    `[webpage] markitdown (${sourceLabel}) ok ${result.ms}ms → ${text.length}c/${extracted.photos.length}img`
+  );
+  return {
+    title,
+    text,
+    photos: extracted.photos as TweetPhoto[],
+    source: `markitdown-${sourceLabel}`,
+  };
 }
 
 function mergePhotos(a: TweetPhoto[], b: TweetPhoto[]): TweetPhoto[] {
@@ -1616,35 +1697,76 @@ export async function fetchWebPage(url: string): Promise<FetchedTweet> {
     );
   }
 
-  type Cand = { title: string; text: string; photos: TweetPhoto[]; publishTime: string; source: string };
+  type Cand = {
+    title: string;
+    text: string;
+    photos: TweetPhoto[];
+    publishTime: string;
+    source: string;
+    score?: number;
+  };
   const candidates: Cand[] = [];
 
   if (rawMd) {
     const md = parseJinaMarkdownPayload(rawMd, feishu);
     candidates.push({ ...md, source: 'jina-md' });
   }
+
+  // A) turndown HTML paths
+  let strippedJinaHtml = '';
   if (jinaHtml && jinaHtml.length > 200) {
-    // Jina HTML wrapper may still include Title: header lines
-    const stripped = jinaHtml
+    strippedJinaHtml = jinaHtml
       .replace(/^Title:\s*.+$/m, '')
       .replace(/^URL Source:\s*.+$/m, '')
       .replace(/^Published Time:\s*.+$/m, '');
-    const htmlParsed = parseHtmlPayload(stripped, feishu);
-    candidates.push({ ...htmlParsed, publishTime: '', source: 'jina-html' });
+    const htmlParsed = parseHtmlPayload(strippedJinaHtml, feishu);
+    candidates.push({
+      ...htmlParsed,
+      publishTime: '',
+      source: 'turndown-jina-html',
+    });
   }
   if (directHtml && directHtml.length > 500) {
     const htmlParsed = parseHtmlPayload(directHtml, feishu);
-    candidates.push({ ...htmlParsed, publishTime: '', source: 'direct-html' });
+    candidates.push({
+      ...htmlParsed,
+      publishTime: '',
+      source: 'turndown-direct-html',
+    });
+  }
+
+  // B) markitdown side-path on same HTML (optional; skipped if not installed)
+  const markitdownJobs: Promise<Cand | null>[] = [];
+  if (strippedJinaHtml.length > 200) {
+    markitdownJobs.push(
+      parseHtmlWithMarkitdown(strippedJinaHtml, feishu, 'jina-html').then(r =>
+        r ? { ...r, publishTime: '' } : null
+      )
+    );
+  }
+  if (directHtml && directHtml.length > 500) {
+    markitdownJobs.push(
+      parseHtmlWithMarkitdown(directHtml, feishu, 'direct-html').then(r =>
+        r ? { ...r, publishTime: '' } : null
+      )
+    );
+  }
+  if (markitdownJobs.length) {
+    const mdResults = await Promise.all(markitdownJobs);
+    for (const r of mdResults) {
+      if (r) candidates.push(r);
+    }
   }
 
   if (!candidates.length) {
     throw new Error('Failed to fetch webpage content from all sources');
   }
 
-  // Pick richest body, but merge photos from all candidates
-  candidates.sort(
-    (a, b) => contentScore(b.text, b.photos.length) - contentScore(a.text, a.photos.length)
-  );
+  // Score all candidates (structure + length − Feishu chrome noise)
+  for (const c of candidates) {
+    c.score = contentScore(c.text, c.photos.length);
+  }
+  candidates.sort((a, b) => (b.score || 0) - (a.score || 0));
   const best = candidates[0];
   let photos = best.photos;
   for (const c of candidates.slice(1)) {
@@ -1657,9 +1779,14 @@ export async function fetchWebPage(url: string): Promise<FetchedTweet> {
   }
   const publishTime = candidates.find(c => c.publishTime)?.publishTime || '';
 
+  // A/B log: every converter score so we can compare turndown vs markitdown
   console.log(
-    `[webpage] sources=${candidates.map(c => `${c.source}:${c.text.length}c/${c.photos.length}img`).join(', ')} ` +
-      `chosen=${best.source} final=${text.length}c/${photos.length}img`
+    `[webpage] sources=${candidates
+      .map(
+        c =>
+          `${c.source}:${c.text.length}c/${c.photos.length}img/s${c.score ?? 0}`
+      )
+      .join(', ')} chosen=${best.source} final=${text.length}c/${photos.length}img`
   );
 
   // Extract domain
@@ -1693,11 +1820,11 @@ export async function fetchWebPage(url: string): Promise<FetchedTweet> {
   return {
     id,
     url,
-    title,
+    title: normalizeScrapedText(title),
     text,
     author: {
-      name: authorName,
-      screen_name: authorHandle,
+      name: normalizeAuthorField(authorName) || domain || 'Unknown',
+      screen_name: normalizeAuthorField(authorHandle) || domain || 'unknown',
       avatar_url: '',
     },
     created_at: publishTime || new Date().toUTCString(),
