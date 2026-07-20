@@ -1,0 +1,1157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#f5f5f5" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0f0f0f" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="icon" type="image/png" href="/favicon.png?v=3" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=3" />
+  <title>开卷有益</title>
+  <style>
+    :root {
+      --bg: #f5f5f5; --surface: #fff; --text: #1a1a1a;
+      --text-secondary: #888; --text-tertiary: #aaa;
+      --accent: #5a5a5a; --accent-bg: #f0f0f0;
+      --border: #eee; --shadow-sm: rgba(0,0,0,0.05); --shadow-md: rgba(0,0,0,0.1);
+      --code-bg: #f2f2f2; --code-color: #d63384;
+      --sidebar-w: min(260px, 82vw);
+    }
+    [data-theme="dark"] {
+      --bg: #0f0f0f; --surface: #1a1a1a; --text: #e8e8e8;
+      --text-secondary: #b0b0b0; --text-tertiary: #888;
+      --accent: #b0b0b0; --accent-bg: #2a2a2a;
+      --border: #3a3a3a; --shadow-sm: rgba(0,0,0,0.3); --shadow-md: rgba(0,0,0,0.4);
+      --code-bg: #2d2d2d; --code-color: #ff8fab;
+    }
+    [data-theme="dark"] .sort-btn.active,
+    [data-theme="dark"] .sort-btn.active:hover,
+    [data-theme="dark"] .sort-btn.active:focus,
+    [data-theme="dark"] .sort-btn.active:active {
+      background: var(--accent-bg); color: var(--accent); border-color: var(--accent-bg);
+    }
+    @keyframes skeleton-pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 0.7; } }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; background: var(--bg); }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: var(--bg); color: var(--text); min-height: 100vh; min-height: 100dvh;
+      -webkit-font-smoothing: antialiased; transition: background 0.3s ease, color 0.3s ease;
+      line-height: 1.7;
+    }
+    body.sidebar-open { overflow: hidden; }
+    /* Do NOT display:none nav — reflows list mid-animation (jank vs QA). */
+    .page-wrapper { overflow-x: hidden; position: relative; min-height: 100vh; min-height: 100dvh; }
+    .container { max-width: 740px; margin: 0 auto; padding: 0 16px 40px; }
+    /* Solid nav bar for flush top on iOS Safari */
+    .nav-bar {
+      position: sticky; top: 0; z-index: 50;
+      display: flex; flex-direction: column; gap: 4px;
+      padding: max(8px, env(safe-area-inset-top)) 16px 10px;
+      margin-bottom: 12px;
+      background: var(--bg);
+      border: none;
+      box-shadow: none;
+      -webkit-transform: translateZ(0);
+      transform: translateZ(0);
+    }
+    .nav-bar::before {
+      content: '';
+      position: absolute;
+      left: 0; right: 0;
+      bottom: 100%;
+      height: 200px;
+      background: inherit;
+      pointer-events: none;
+    }
+    .nav-bar .nav-row1 { display: flex; align-items: center; gap: 8px; }
+    .nav-bar .nav-row2 { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
+    .nav-bar .nav-title { font-size: 20px; font-weight: 700; color: var(--text); white-space: nowrap; }
+    /* Align count with title text (hamburger 36px + row gap 8px), not with menu button */
+    .nav-bar .nav-count {
+      font-size: 13px; color: var(--text-secondary); white-space: nowrap;
+      margin-left: 44px;
+    }
+    .hamburger {
+      width: 36px; height: 36px; border: none; border-radius: 50%; flex-shrink: 0;
+      background: var(--surface); color: var(--text-secondary); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 1px 4px var(--shadow-sm);
+      -webkit-tap-highlight-color: transparent;
+    }
+    .hamburger:hover { color: var(--text); }
+    .hamburger svg { width: 18px; height: 18px; }
+    .sort-buttons { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+    .header-controls { display: flex; gap: 8px; align-items: center; flex-shrink: 0; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .theme-btn, .refresh-btn {
+      width: 32px; height: 32px; border: none; border-radius: 50%; flex-shrink: 0;
+      background: transparent; color: var(--text-secondary); cursor: pointer;
+      display: flex; align-items: center; justify-content: center; transition: all 0.2s;
+    }
+    .theme-btn:hover, .refresh-btn:hover { color: var(--text); }
+    /* Solid chips only — no hollow border that paints before fill */
+    .sort-btn {
+      padding: 5px 10px;
+      border: 1px solid transparent;
+      border-radius: 14px;
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 12px;
+      cursor: pointer;
+      outline: none;
+      white-space: nowrap;
+      transition: none !important;
+      -webkit-tap-highlight-color: transparent;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    .sort-btn:hover:not(.active),
+    .sort-btn:focus:not(.active),
+    .sort-btn:active:not(.active) {
+      border-color: transparent;
+      color: var(--text);
+      background: var(--accent-bg);
+    }
+    .sort-btn.active,
+    .sort-btn.active:hover,
+    .sort-btn.active:focus,
+    .sort-btn.active:active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+      transition: none !important;
+    }
+    .search-input {
+      padding: 5px 10px; border: 1px solid var(--border); border-radius: 14px;
+      background: transparent; color: var(--text); font-size: 13px;
+      width: 140px; outline: none; transition: all 0.2s;
+    }
+    .search-input::placeholder { color: var(--text-tertiary); font-size: 12px; }
+    .search-input:focus { border-color: var(--accent); width: 160px; }
+    .article-list { list-style: none; }
+    .article-item {
+      background: var(--surface); border-radius: 16px; margin-bottom: 12px;
+      box-shadow: 0 1px 3px var(--shadow-sm);
+      transition: transform 0.2s ease, box-shadow 0.2s ease; position: relative;
+      overflow: hidden;
+    }
+    .article-item:hover { transform: translateY(-2px) scale(1.005); box-shadow: 0 8px 24px var(--shadow-md); }
+    .article-item:active { background: rgba(128,128,128,0.25); transition: background 0.05s; }
+    .article-item.pinned { }
+    .item-row { display: flex; align-items: flex-start; padding: 16px; }
+    .meta-avatar {
+      width: 18px; height: 18px; border-radius: 50%; object-fit: cover;
+      flex-shrink: 0; background: var(--border);
+    }
+    .article-link {
+      flex: 1; display: block; padding: 0;
+      text-decoration: none; color: inherit; min-width: 0;
+      -webkit-tap-highlight-color: transparent;
+      outline: none;
+    }
+    .article-link:focus { outline: none; }
+    .article-link:active { background: transparent; }
+    .article-title-wrap {
+      font-size: 17px; font-weight: 700; color: var(--text);
+      margin-bottom: 6px; line-height: 1.5;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .pinned-badge {
+      font-size: 11px; font-weight: 500; color: var(--accent);
+      background: var(--accent-bg); padding: 1px 8px; border-radius: 6px; flex-shrink: 0;
+    }
+    .article-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 13px; margin-bottom: 6px; }
+    .meta-author { color: var(--text); font-weight: 500; }
+    .meta-time { color: var(--text-secondary); }
+    .article-stats { display: flex; gap: 16px; font-size: 12px; color: var(--text-tertiary); margin-bottom: 6px; }
+    .stat { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; color: var(--text-secondary); }
+    .stat svg { flex-shrink: 0; opacity: 0.7; }
+    .item-actions {
+      display: flex; align-items: center; gap: 6px;
+      padding: 0 12px 0 0; position: relative; flex-shrink: 0;
+    }
+    .unread-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #fa5151; flex-shrink: 0;
+    }
+    .more-wrap { position: relative; }
+    .more-btn {
+      width: 26px; height: 26px; border: none; border-radius: 50%;
+      background: transparent; color: var(--text-secondary); font-size: 18px;
+      cursor: pointer; display: flex; align-items: center;
+      justify-content: center; line-height: 1;
+    }
+    .more-btn:hover { background: var(--border); color: var(--text); }
+    .dropdown-menu {
+      position: absolute;
+      background: var(--surface); border-radius: 8px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+      min-width: 120px; z-index: 9999;
+      display: none; overflow: hidden;
+    }
+    .dropdown-menu.show { display: block; }
+    .dropdown-item {
+      padding: 12px 16px; font-size: 14px; color: var(--text);
+      cursor: pointer; transition: background 0.15s;
+    }
+    .dropdown-item:hover { background: var(--border); }
+    .dropdown-item.delete { color: #fa5151; }
+    .dropdown-item.delete:hover { background: rgba(250,81,81,0.1); }
+    .empty {
+      background: var(--surface); border-radius: 16px; padding: 60px 24px;
+      text-align: center; color: var(--text-secondary); font-size: 15px;
+      box-shadow: 0 1px 3px var(--shadow-sm);
+    }
+    /* ---- Swipe actions (mobile) ---- */
+    .swipe-wrap { position: relative; overflow: hidden; touch-action: pan-y; -webkit-touch-callout: none; background: var(--surface); }
+    .swipe-content { position: relative; z-index: 2; background: var(--surface); transition: transform 0.25s ease; width: 100%; }
+    .swipe-actions {
+      display: none;
+      position: absolute;
+      right: 0; top: 0; bottom: 0;
+      align-items: stretch;
+      z-index: 3;
+      transform: translateX(100%);
+      transition: transform 0.25s ease;
+    }
+    .swipe-btn {
+      border: none; padding: 0 14px; font-size: 13px; color: #fff;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      white-space: nowrap;
+    }
+    .swipe-btn.pin { background: #5a5a5a; }
+    .swipe-btn.read { background: #7d93ad; }
+    .swipe-btn.source { background: #888; }
+    .swipe-btn.delete { background: #fa5151; }
+    /* 刷新路径占满 viewBox，比太阳略「显大」→ 用 15px 对齐视觉重量 */
+    .refresh-btn svg { width: 15px; height: 15px; }
+    .refresh-btn.spinning svg { animation: refresh-spin 0.6s linear; }
+    @keyframes refresh-spin { to { transform: rotate(360deg); } }
+    @media (max-width: 480px) {
+      .nav-bar { padding: max(4px, env(safe-area-inset-top)) 12px 8px; }
+      .nav-bar .nav-title { font-size: 17px; }
+      .nav-bar .nav-count { font-size: 12px; }
+      .sort-btn { padding: 4px 8px; font-size: 11px; }
+      .article-link { padding: 16px 0 16px 16px; }
+      .item-actions { padding: 16px 12px 16px 4px; }
+      .more-btn { display: none; }
+    }
+    @media (min-width: 481px) {
+      .swipe-actions { display: none !important; }
+    }
+    .theme-btn:focus-visible,
+    .refresh-btn:focus-visible,
+    .sort-btn:focus-visible,
+    .more-btn:focus-visible,
+    .dropdown-item:focus-visible,
+    .article-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    /*
+     * Doubao-style drawer:
+     * Outer shell full physical height incl. status bar; right edge continuous to top.
+     * Safe-area only on .sidebar-inner. Overlay only to the right of shell.
+     */
+    .sidebar {
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: var(--sidebar-w);
+      top: calc(0px - env(safe-area-inset-top, 0px));
+      height: calc(100% + env(safe-area-inset-top, 0px));
+      height: calc(100dvh + env(safe-area-inset-top, 0px));
+      height: calc(100svh + env(safe-area-inset-top, 0px));
+      min-height: calc(100% + env(safe-area-inset-top, 0px));
+      box-sizing: border-box;
+      padding: 0;
+      margin: 0;
+      background: var(--surface);
+      z-index: 1000;
+      border: none;
+      outline: none;
+      /* Match QA: GPU transform only (never animate left/width/height) */
+      -webkit-transform: translate3d(-100%, 0, 0);
+      transform: translate3d(-100%, 0, 0);
+      transition: transform 0.25s ease;
+      will-change: transform;
+      -webkit-backface-visibility: hidden;
+      backface-visibility: hidden;
+      box-shadow: 2px 0 16px var(--shadow-sm);
+      overflow: visible;
+    }
+    .sidebar.open {
+      -webkit-transform: translate3d(0, 0, 0);
+      transform: translate3d(0, 0, 0);
+    }
+    .sidebar::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: -80px;
+      height: 80px;
+      background: var(--surface);
+      pointer-events: none;
+    }
+    .sidebar-inner {
+      position: relative;
+      z-index: 1;
+      height: 100%;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      /* extra space below status-bar time so 「导航」不贴系统时钟 */
+      padding-top: calc(env(safe-area-inset-top, 0px) + 20px);
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+      background: transparent;
+    }
+    .sidebar-overlay {
+      position: fixed;
+      top: calc(0px - env(safe-area-inset-top, 0px));
+      right: 0;
+      bottom: 0;
+      left: var(--sidebar-w);
+      width: auto;
+      height: calc(100% + env(safe-area-inset-top, 0px));
+      height: calc(100dvh + env(safe-area-inset-top, 0px));
+      background: rgba(0, 0, 0, 0.45);
+      z-index: 999;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+      border: none;
+    }
+    .sidebar-overlay.show {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .sidebar-header {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 8px 16px 16px;
+      flex-shrink: 0;
+      background: transparent;
+      border: none;
+    }
+    .sidebar-header h3 { font-size: 18px; font-weight: 700; }
+    .sidebar-search-wrap {
+      position: relative;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .sidebar-search {
+      width: 100%; padding: 8px 12px 8px 32px;
+      border: 1px solid var(--border); border-radius: 10px;
+      background: #fafafa; color: var(--text);
+      font-size: 14px; outline: none; font-family: inherit;
+      cursor: pointer;
+      pointer-events: none;
+    }
+    [data-theme="dark"] .sidebar-search { background: #242424; }
+    .sidebar-search::placeholder { color: var(--text-tertiary); }
+    .sidebar-search:focus { border-color: var(--border); outline: none; }
+    .sidebar-search-icon {
+      position: absolute; left: 10px; top: 50%;
+      transform: translateY(-50%);
+      width: 16px; height: 16px; color: var(--text-tertiary);
+      pointer-events: none;
+    }
+    .search-segment {
+      padding: 10px 16px; color: var(--text-secondary); font-size: 12px;
+      text-transform: uppercase; letter-spacing: 0.5px;
+      border-bottom: 1px solid var(--border); background: var(--surface);
+    }
+    .search-posts-btn {
+      display: flex; align-items: center; gap: 10px;
+      padding: 14px 16px; border-bottom: 1px solid var(--border);
+      cursor: pointer; transition: background 0.15s;
+      color: var(--text); font-size: 14px;
+    }
+    .search-posts-btn:hover, .search-posts-btn:active { background: var(--bg); }
+    .search-posts-btn svg { flex-shrink: 0; color: var(--accent); }
+    .post-result-item {
+      display: block; padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      text-decoration: none; color: inherit;
+      transition: background 0.15s;
+    }
+    .post-result-item:hover, .post-result-item:active { background: var(--bg); }
+    .post-result-title { font-size: 14px; font-weight: 600; margin-bottom: 2px; color: var(--text); }
+    .post-result-meta { font-size: 12px; color: var(--text-secondary); }
+    .post-result-snippet {
+      font-size: 13px; color: var(--text-secondary); margin-top: 4px;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .post-result-snippet em { color: var(--accent); font-style: normal; font-weight: 600; }
+    .sidebar-nav { flex: 1; overflow-y: auto; }
+    .sidebar-nav a {
+      display: flex; align-items: center; gap: 12px;
+      padding: 14px 16px; text-decoration: none; color: var(--text);
+      font-size: 15px; transition: background 0.15s;
+    }
+    .sidebar-nav a:hover, .sidebar-nav a:active { background: var(--bg); }
+    .sidebar-nav a.active { background: var(--accent-bg); color: var(--accent); font-weight: 600; }
+    .sidebar-nav a svg {
+      width: 18px; height: 18px; flex-shrink: 0; color: var(--text-secondary);
+    }
+    .sidebar-nav a.active svg { color: var(--accent); }
+  </style>
+</head>
+<body>
+<div class="sidebar" id="sidebar">
+  <div class="sidebar-inner">
+    <div class="sidebar-header">
+      <h3>导航</h3>
+      <div class="sidebar-search-wrap" onclick="location.href='/search'" role="link" aria-label="搜索">
+        <svg class="sidebar-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" class="sidebar-search" id="sidebarSearch" placeholder="搜索帖子和历史记录..." readonly tabindex="-1" aria-hidden="true">
+      </div>
+    </div>
+    <div class="sidebar-list" id="sidebarList"></div>
+    <nav class="sidebar-nav">
+      <a href="/qa?new=1" onclick="closeSidebar()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+        <span>知识问答</span>
+      </a>
+      <a href="/knowledge" onclick="closeSidebar()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+        <span>知识库</span>
+      </a>
+    </nav>
+  </div>
+</div>
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
+<div class="page-wrapper">
+<!-- Nav bar -->
+<div class="nav-bar" id="navBar">
+  <div class="nav-row1">
+    <button class="hamburger" onclick="openSidebar()" aria-label="菜单">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
+    <div class="nav-title" style="flex:1">开卷有益</div>
+    <button class="refresh-btn" type="button" onclick="refreshPage(this)" title="刷新" aria-label="刷新">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+    </button>
+    <button class="theme-btn" onclick="toggleTheme()" title="切换主题" aria-label="切换主题">
+      <svg id="theme-icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+      <svg id="theme-icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
+    </button>
+  </div>
+  <div class="nav-row2">
+    <div class="nav-count" id="count">共 1 条</div>
+    <div class="header-controls">
+      <div class="sort-buttons">
+        <button class="sort-btn active" onclick="sortBy('saved')" id="btn-saved">收藏</button>
+        <button class="sort-btn" onclick="sortBy('tweet')" id="btn-tweet">更新</button>
+        <button class="sort-btn" onclick="sortBy('unread')" id="btn-unread">未读</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="container">
+    <ul class="article-list" id="article-list">
+      
+          <li class="article-item" id="item-TheMarketMemo_2071840605223940449">
+            <div class="swipe-wrap">
+              <div class="item-row swipe-content">
+                <a href="articles/TheMarketMemo_2071840605223940449.html" class="article-link" onclick="markReadNoRender('TheMarketMemo_2071840605223940449')">
+                  <div class="article-title-wrap">
+                    LEI
+                    
+                  </div>
+                  <div class="article-meta">
+                    <img src="/avatars/twitter_TheMarketMemo_LEI.jpg" alt="" class="meta-avatar" loading="lazy" />
+                    <span class="meta-author">LEI</span>
+                    <span class="meta-time">收藏于 07/19 17:03 · 更新于 06/30 14:17</span>
+                  </div>
+                  <div class="article-stats">
+                    <span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg><span>11</span></span>
+                    <span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg><span>68</span></span>
+                    <span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg><span>363</span></span>
+                  </div>
+                </a>
+                <div class="item-actions">
+                  <span class="unread-dot"></span>
+                  <div class="more-wrap">
+                    <button class="more-btn" onclick="toggleMenu(event, 'TheMarketMemo_2071840605223940449')" title="更多操作">⋯</button>
+                    <div class="dropdown-menu" id="menu-TheMarketMemo_2071840605223940449">
+                      <div class="dropdown-item" onclick="pinItem('TheMarketMemo_2071840605223940449', true)">置顶</div>
+                      <div class="dropdown-item" onclick="markRead('TheMarketMemo_2071840605223940449')">标为已读</div>
+                      <div class="dropdown-item" onclick="window.open('https://x.com/TheMarketMemo/status/2071840605223940449', '_blank')">查看原文</div>
+                      <div class="dropdown-item delete" onclick="deleteItem('TheMarketMemo_2071840605223940449')">删除</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="swipe-actions">
+                <button class="swipe-btn pin" onclick="event.stopPropagation(); pinItem('TheMarketMemo_2071840605223940449', true)">置顶</button>
+                <button class="swipe-btn read" onclick="event.stopPropagation(); markRead('TheMarketMemo_2071840605223940449')">标为已读</button>
+                <button class="swipe-btn source" onclick="event.stopPropagation(); window.open('https://x.com/TheMarketMemo/status/2071840605223940449', '_blank')">原文</button>
+                <button class="swipe-btn delete" onclick="event.stopPropagation(); deleteItem('TheMarketMemo_2071840605223940449')">删除</button>
+              </div>
+            </div>
+          </li>
+    </ul>
+  </div>
+  <script>
+    let articlesData = [{"fileName":"TheMarketMemo_2071840605223940449.html","title":"LEI","author":"LEI","authorAvatar":"/avatars/twitter_TheMarketMemo_LEI.jpg","tweetUrl":"https://x.com/TheMarketMemo/status/2071840605223940449","tweetDate":"2026/06/30 14:17","savedDate":"2026/07/19 17:03","savedTimestamp":1784451820,"tweetTimestamp":1782800267,"sourceType":"twitter","pinned":false,"pinnedAt":0,"unread":true,"likes":363,"retweets":68,"replies":11}];
+    const originalArticlesData = articlesData.slice();
+    let activeMenu = null;
+    let activeMenuParent = null;
+    let menuJustOpened = false;
+
+    function closeMenu() {
+      if (!activeMenu || menuJustOpened) return;
+      activeMenu.classList.remove('show');
+      if (activeMenuParent) { activeMenuParent.appendChild(activeMenu); activeMenuParent = null; }
+      activeMenu = null;
+    }
+
+    document.addEventListener('click', closeMenu);
+    window.addEventListener('scroll', closeMenu, true);
+    // Re-render on bfcache restore so Read/Unread dots reflect current data
+    window.addEventListener('pageshow', function(e) {
+      if (e.persisted) renderList();
+    });
+
+    function toggleMenu(e, id) {
+      e.preventDefault(); e.stopPropagation();
+      const menu = document.getElementById('menu-' + id);
+      if (!menu) return;
+      if (activeMenu && activeMenu !== menu) {
+        activeMenu.classList.remove('show');
+        if (activeMenuParent) { activeMenuParent.appendChild(activeMenu); activeMenuParent = null; }
+      }
+      menu.classList.toggle('show');
+      if (menu.classList.contains('show')) {
+        activeMenuParent = menu.parentNode;
+        document.body.appendChild(menu);
+        const btn = e.currentTarget;
+        const rect = btn.getBoundingClientRect();
+        menu.style.top = (rect.bottom + 4) + 'px';
+        menu.style.right = (window.innerWidth - rect.right) + 'px';
+        activeMenu = menu;
+        menuJustOpened = true;
+        setTimeout(function() { menuJustOpened = false; }, 100);
+      } else {
+        if (activeMenuParent) { activeMenuParent.appendChild(menu); activeMenuParent = null; }
+        activeMenu = null;
+      }
+    }
+
+    function getSortedData() {
+      const isUnread = document.getElementById('btn-unread').classList.contains('active');
+      let data = isUnread
+        ? articlesData.filter(function(a) { return a.unread; })
+        : [...articlesData];
+      const isSaved = document.getElementById('btn-saved').classList.contains('active');
+      const sortFn = isSaved
+        ? function(a, b) { return b.savedTimestamp - a.savedTimestamp; }
+        : function(a, b) { return b.tweetTimestamp - a.tweetTimestamp; };
+      data.sort(function(a, b) {
+        if (a.pinned && !b.pinned) return -1;
+        if (!a.pinned && b.pinned) return 1;
+        if (a.pinned && b.pinned) return (b.pinnedAt || 0) - (a.pinnedAt || 0);
+        return sortFn(a, b);
+      });
+      return data;
+    }
+
+    function renderList() {
+      const list = document.getElementById('article-list');
+      const data = getSortedData();
+      if (data.length === 0) {
+        const isUnread = document.getElementById('btn-unread').classList.contains('active');
+        list.innerHTML = '<li class="empty">' + (isUnread ? '你真棒，所有帖子都看完了！' : '还没有保存的推文') + '</li>';
+        return;
+      }
+      const isSaved = document.getElementById('btn-saved').classList.contains('active');
+      list.innerHTML = data.map(a => {
+        const pinnedBadge = a.pinned ? '<span class="pinned-badge">置顶</span>' : '';
+        const unreadDot = a.unread ? '<span class="unread-dot"></span>' : '';
+        const pinLabel = a.pinned ? '取消置顶' : '置顶';
+        const id = a.fileName.replace('.html', '');
+        const avatarUrl = a.authorAvatar || ('https://unavatar.io/x/' + (a.authorHandle || ''));
+        const isWechat = a.sourceType === 'wechat' || (a.tweetUrl && /mp.weixin.qq.com|weixin.qq.com/.test(a.tweetUrl));
+        const isWebpage = a.sourceType === 'webpage';
+        const statsHtml = (!isWechat && !isWebpage && (Number(a.replies) > 0 || Number(a.retweets) > 0 || Number(a.likes) > 0))
+          ? '<div class="article-stats"><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>' + (a.replies||0) + '</span><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>' + (a.retweets||0) + '</span><span class="stat"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>' + (a.likes||0) + '</span></div>'
+          : '';
+        var swipeActions = '<div class="swipe-actions"><button class="swipe-btn pin" onclick="event.stopPropagation(); pinItem(\'' + id + '\', ' + (a.pinned ? 'false' : 'true') + ')">' + pinLabel + '</button><button class="swipe-btn read" onclick="event.stopPropagation(); ' + (a.unread ? 'markRead(\'' + id + '\')' : 'markUnread(\'' + id + '\')') + '">' + (a.unread ? '标为已读' : '标为未读') + '</button>' + (a.tweetUrl ? '<button class="swipe-btn source" onclick="event.stopPropagation(); window.open(\'' + a.tweetUrl + '\', \'_blank\')">原文</button>' : '') + '<button class="swipe-btn delete" onclick="event.stopPropagation(); deleteItem(\'' + id + '\')">删除</button></div>';
+        return '<li class="article-item' + (a.pinned ? ' pinned' : '') + '" id="item-' + id + '"><div class="swipe-wrap"><div class="item-row swipe-content"><a href="articles/' + a.fileName + '" class="article-link" onclick="markReadNoRender(\'' + id + '\')"><div class="article-title-wrap">' + a.title + pinnedBadge + '</div><div class="article-meta"><img src="' + avatarUrl + '" alt="" class="meta-avatar" loading="lazy" /><span class="meta-author">' + a.author + '</span><span class="meta-time">收藏于 ' + (a.savedDate || '').substring(5) + ' · 更新于 ' + a.tweetDate.substring(5) + '</span></div>' + statsHtml + '</a><div class="item-actions">' + unreadDot + '<div class="more-wrap"><button class="more-btn" onclick="toggleMenu(event, \'' + id + '\')">⋯</button><div class="dropdown-menu" id="menu-' + id + '"><div class="dropdown-item" onclick="pinItem(\'' + id + '\', ' + (a.pinned ? 'false' : 'true') + ')">' + pinLabel + '</div><div class="dropdown-item" onclick="' + (a.unread ? 'markRead(\'' + id + '\')' : 'markUnread(\'' + id + '\')') + '">' + (a.unread ? '标为已读' : '标为未读') + '</div>' + (a.tweetUrl ? '<div class="dropdown-item" onclick="window.open(\'' + a.tweetUrl + '\', \'_blank\')">查看原文</div>' : '') + '<div class="dropdown-item delete" onclick="deleteItem(\'' + id + '\')">删除</div></div></div></div></div>' + swipeActions + '</div></li>';
+      }).join('');
+    }
+
+    function sortBy(type) {
+      document.getElementById('btn-saved').classList.toggle('active', type === 'saved');
+      document.getElementById('btn-tweet').classList.toggle('active', type === 'tweet');
+      document.getElementById('btn-unread').classList.toggle('active', type === 'unread');
+      renderList();
+    }
+
+    async function pinItem(id, pin) {
+      const res = await fetch('/api/pin', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: id + '.html', pin: pin === 'true' || pin === true })
+      });
+      const d = await res.json();
+      if (d.success) {
+        const item = articlesData.find(a => a.fileName === id + '.html');
+        if (item) { item.pinned = d.pinned; item.pinnedAt = d.pinned ? Date.now() : 0; }
+        renderList();
+      }
+    }
+
+    function markRead(id) {
+      const item = articlesData.find(a => a.fileName === id + '.html');
+      if (item && item.unread) {
+        // Fire-and-forget: sendBeacon for reliable delivery during navigation
+        const data = JSON.stringify({ id: id + '.html' });
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon('/api/read', new Blob([data], { type: 'application/json' }));
+        } else {
+          fetch('/api/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: data, keepalive: true });
+        }
+        item.unread = false;
+        setTimeout(renderList, 150);
+      }
+    }
+
+    function markReadNoRender(id) {
+      const item = articlesData.find(a => a.fileName === id + '.html');
+      if (item && item.unread) {
+        item.unread = false;
+        // Immediately hide the red dot in DOM so it's gone on back-navigation
+        var dot = document.querySelector('#item-' + id + ' .unread-dot');
+        if (dot) dot.style.display = 'none';
+        const data = JSON.stringify({ id: id + '.html' });
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon('/api/read', new Blob([data], { type: 'application/json' }));
+        } else {
+          fetch('/api/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: data, keepalive: true });
+        }
+      }
+    }
+
+    async function markUnread(id) {
+      const res = await fetch('/api/unread', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: id + '.html' })
+      });
+      const d = await res.json();
+      if (d.success) {
+        const item = articlesData.find(a => a.fileName === id + '.html');
+        if (item) item.unread = true;
+        renderList();
+      }
+    }
+
+    async function deleteItem(id) {
+      if (!confirm('确定要删除这条推文吗？')) return;
+      const res = await fetch('/api/delete', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: id + '.html' })
+      });
+      const d = await res.json();
+      if (d.success) {
+        articlesData = articlesData.filter(a => a.fileName !== id + '.html');
+        document.getElementById('count').textContent = '共 ' + articlesData.length + ' 条';
+        renderList();
+      }
+    }
+
+    // ---- Mobile swipe handling (WeChat-style) ----
+    (function initSwipe() {
+      var DAMPING = 1.0;
+      var VERTICAL_RATIO = 1.2;
+      var TRANSITION_DURATION = 2500;
+      var TRANSITION_STYLE = 'transform 0.35s cubic-bezier(0.32, 0.72, 0, 1)';
+      var OVERSCROLL = 40;
+      var CLICK_THRESHOLD = 20;
+      var CLICK_TIME = 300;
+
+      var startX = 0, startY = 0, startTime = 0;
+      var currentX = 0, currentY = 0;
+      var activeSwipeContent = null, activeSwipeActions = null;
+      var isSwiping = false, isScrolling = false, isExpanded = false;
+      var actionsWidth = 0;
+      // Track which item is expanded so closeAllSwipes can check actual state
+      var expandedContent = null;
+
+      function getTranslateX(el) {
+        var style = window.getComputedStyle(el).transform;
+        if (!style || style === 'none') return 0;
+        var match = style.match(/matrix(([^,]+),([^,]+),([^,]+),([^,]+),([^,]+),([^)]+))/);
+        if (match) return parseFloat(match[5]);
+        var match3d = style.match(/matrix3d(([^)]+))/);
+        if (match3d) {
+          var values = match3d[1].split(',');
+          return values.length >= 13 ? parseFloat(values[12]) : 0;
+        }
+        return 0;
+      }
+
+      function setTranslateX(el, offset, withTransition) {
+        el.style.transition = withTransition ? TRANSITION_STYLE : 'none';
+        el.style.transform = 'translateX(' + offset + 'px)';
+      }
+
+      function hideSwipeActions(actions) {
+        if (!actions) return;
+        if (actions._closing) return; // animation in progress
+        actions.style.transition = TRANSITION_STYLE;
+        void actions.offsetWidth;
+        actions.style.transform = 'translateX(100%)';
+        setTimeout(function() {
+          if (actions.style.transform === 'translateX(100%)') actions.style.display = 'none';
+        }, TRANSITION_DURATION);
+      }
+
+      function showSwipeActions(actions) {
+        if (!actions) return;
+        _cancelCloseAnim(actions);
+        actions.style.display = 'flex';
+        actions.style.transition = 'none';
+        actions.style.transform = 'translateX(100%)';
+        // force reflow
+        void actions.offsetWidth;
+      }
+
+      function _parseTranslateX(el) {
+        var computed = window.getComputedStyle(el).transform;
+        if (!computed || computed === 'none') return 0;
+        var m = computed.match(/matrix(([^)]+))/);
+        if (m) {
+          var parts = m[1].split(',');
+          return parseFloat(parts[4]) || 0;
+        }
+        var m3d = computed.match(/matrix3d(([^)]+))/);
+        if (m3d) {
+          var p = m3d[1].split(',');
+          return parseFloat(p[12]) || 0;
+        }
+        return 0;
+      }
+
+      function _startCloseAnim(actions) {
+        if (!actions) return;
+        _cancelCloseAnim(actions);
+        actions._closing = true;
+        actions.style.display = 'flex';
+        // Safari may not start a CSS transition for changes made during
+        // a touch event (touchend). Defer to the next macrotask so the
+        // browser has fully exited the touch sequence.
+        setTimeout(function() {
+          if (!actions._closing) return;
+          // Reset to visible position. Must use explicit '0px' — setting ''
+          // reverts to the CSS default translateX(100%) = off-screen, so the
+          // "animation" goes from 100%→100% = no change = no transition.
+          actions.style.transition = 'none';
+          actions.style.transform = 'translateX(0px)';
+          void actions.offsetWidth;
+          actions.style.transition = TRANSITION_STYLE;
+          actions.style.transform = 'translateX(100%)';
+          var tid;
+          var handler = function() {
+            clearTimeout(tid);
+            actions.removeEventListener('transitionend', handler);
+            actions._closing = false;
+            actions.style.display = 'none';
+          };
+          actions.addEventListener('transitionend', handler);
+          // Fallback: Safari may not fire transitionend; force cleanup after animation duration
+          tid = setTimeout(handler, 400);
+        }, 0);
+      }
+
+      function _cancelCloseAnim(actions) {
+        if (!actions) return;
+        actions._closing = false;
+      }
+
+      function closeAllSwipes() {
+        if (isSwiping) return;
+        // Check actual content position, not the isExpanded flag which
+        // can get out of sync in Safari's event timing.
+        if (expandedContent && getTranslateX(expandedContent) < -10) return;
+        expandedContent = null;
+        var wraps = document.querySelectorAll('.swipe-wrap');
+        for (var i = 0; i < wraps.length; i++) {
+          var content = wraps[i].querySelector('.swipe-content');
+          var actions = wraps[i].querySelector('.swipe-actions');
+          if (content) {
+            content.style.transition = TRANSITION_STYLE;
+            content.style.transform = '';
+          }
+          hideSwipeActions(actions);
+        }
+        activeSwipeContent = null;
+        activeSwipeActions = null;
+        isExpanded = false;
+      }
+
+      document.addEventListener('click', function(e) {
+        if (e.target.closest('.swipe-actions')) return;
+        // Defer to let <a> navigation happen first
+        setTimeout(closeAllSwipes, 0);
+      });
+
+      document.addEventListener('touchstart', function(e) {
+        var wrap = e.target.closest('.swipe-wrap');
+        // If touch is outside swipe-wrap but an item is expanded, don't
+        // close it — iOS hard press can shift touch coordinates.
+        if (!wrap) {
+          if (!expandedContent || !(getTranslateX(expandedContent) < -10)) {
+            closeAllSwipes();
+          }
+          return;
+        }
+        var content = wrap.querySelector('.swipe-content');
+        if (!content) return;
+        if (e.touches.length > 1) { isSwiping = false; return; }
+
+        var newActions = wrap.querySelector('.swipe-actions');
+
+        startX = e.touches[0].clientX;
+        startY = e.touches[0].clientY;
+        startTime = Date.now();
+        currentX = startX; currentY = startY;
+        isSwiping = true; isScrolling = false;
+
+        var currentOffset = getTranslateX(content);
+        isExpanded = currentOffset < -10;
+        actionsWidth = 0;
+
+        // When expanded, lock buttons in visible position during the gesture.
+        if (isExpanded && newActions) {
+          newActions.style.display = 'flex';
+          newActions.style.transition = 'none';
+          newActions.style.transform = 'translateX(0px)';
+        }
+
+        // Close other open swipes before setting active
+        if (activeSwipeContent && activeSwipeContent !== content) {
+          var otherWrap = activeSwipeContent.closest('.swipe-wrap');
+          if (otherWrap) {
+            var otherContent = otherWrap.querySelector('.swipe-content');
+            var otherActions = otherWrap.querySelector('.swipe-actions');
+            if (otherContent) {
+              otherContent.style.transition = TRANSITION_STYLE;
+              otherContent.style.transform = '';
+            }
+            hideSwipeActions(otherActions);
+          }
+        }
+
+        activeSwipeContent = content;
+        activeSwipeActions = newActions;
+      }, { passive: true });
+
+      document.addEventListener('touchmove', function(e) {
+        if (!isSwiping || !activeSwipeContent) return;
+        if (e.touches.length > 1) { isSwiping = false; return; }
+
+        currentX = e.touches[0].clientX;
+        currentY = e.touches[0].clientY;
+        var deltaX = currentX - startX;
+        var deltaY = currentY - startY;
+
+        // Resolve vertical scroll conflict
+        if (!isScrolling && Math.abs(deltaY) > Math.abs(deltaX) * VERTICAL_RATIO) {
+          isScrolling = true; isSwiping = false; return;
+        }
+        if (isScrolling) return;
+
+        // Lazy-init: show swipe actions only when user actually swipes (not on tap)
+        if (!actionsWidth && Math.abs(deltaX) > 5 && activeSwipeActions) {
+          if (!isExpanded) {
+            showSwipeActions(activeSwipeActions);
+          }
+          actionsWidth = activeSwipeActions.offsetWidth || activeSwipeActions.scrollWidth || 200;
+        }
+        if (!actionsWidth) return;
+
+        var offset;
+        if (deltaX < 0) {
+          // Left swipe — content follows finger, buttons slide in from right
+          offset = isExpanded ? -actionsWidth + deltaX * DAMPING : deltaX * DAMPING;
+          // Once buttons are fully visible, don't let content go further
+          // left and create a white gap (applies in both open and closed states).
+          if (offset < -actionsWidth) {
+            var over = offset + actionsWidth;
+            offset = -actionsWidth + over * 0.12; // tight elastic dampening
+          }
+        } else if (deltaX > 0 && isExpanded) {
+          // Right swipe to close — from expanded state
+          offset = -actionsWidth + deltaX * DAMPING;
+        } else {
+          return; // Right swipe on closed item — ignore
+        }
+
+        // Elastic overscroll
+        if (offset < -actionsWidth - OVERSCROLL) {
+          var over = offset + actionsWidth + OVERSCROLL;
+          offset = -actionsWidth - OVERSCROLL + over * 0.12;
+        }
+        if (offset > OVERSCROLL) {
+          offset = OVERSCROLL + (offset - OVERSCROLL) * 0.12;
+        }
+
+        setTranslateX(activeSwipeContent, offset, false);
+
+        // On right-swipe (close): keep buttons visible, only track content.
+        // Buttons slide out via _startCloseAnim at touchend instead.
+        // On left-swipe (open): track buttons in sync with content.
+        if (activeSwipeActions && !(deltaX > 0 && isExpanded)) {
+          var btnOffset = Math.max(0, Math.min(actionsWidth, actionsWidth + offset));
+          activeSwipeActions.style.transition = 'none';
+          activeSwipeActions.style.transform = 'translateX(' + btnOffset + 'px)';
+        }
+      }, { passive: true });
+
+      document.addEventListener('touchend', function() {
+        if (!isSwiping || !activeSwipeContent || !actionsWidth) return;
+        isSwiping = false;
+
+        var deltaX = currentX - startX;
+        var elapsed = Date.now() - startTime;
+
+        // Treat as tap/click if minimal movement and short duration
+        if (Math.abs(deltaX) <= CLICK_THRESHOLD && elapsed < CLICK_TIME) {
+          // Let click event fire naturally; don't mutate DOM here
+          activeSwipeContent = null;
+          activeSwipeActions = null;
+          isExpanded = false;
+          expandedContent = null;
+          return;
+        }
+
+        var currentOffset = getTranslateX(activeSwipeContent);
+        var speed = elapsed > 0 ? Math.abs(deltaX) / elapsed : 0;
+
+        // Right swipe always collapses; left swipe expands if past threshold or fast
+        if (deltaX > 0) {
+          setTranslateX(activeSwipeContent, 0, true);
+          if (activeSwipeActions) {
+            _startCloseAnim(activeSwipeActions);
+          }
+          activeSwipeContent = null;
+          activeSwipeActions = null;
+          isExpanded = false;
+          expandedContent = null;
+        } else if (currentOffset <= -actionsWidth / 4 || speed > 0.5) {
+          setTranslateX(activeSwipeContent, -actionsWidth, true);
+          if (activeSwipeActions) {
+            _cancelCloseAnim(activeSwipeActions);
+            activeSwipeActions.style.transition = TRANSITION_STYLE;
+            activeSwipeActions.style.transform = 'translateX(0)';
+          }
+          isExpanded = true;
+          expandedContent = activeSwipeContent;
+        } else {
+          setTranslateX(activeSwipeContent, 0, true);
+          if (activeSwipeActions) {
+            _startCloseAnim(activeSwipeActions);
+          }
+          activeSwipeContent = null;
+          activeSwipeActions = null;
+          isExpanded = false;
+          expandedContent = null;
+        }
+      }, { passive: true });
+
+      document.addEventListener('touchcancel', function() {
+        if (activeSwipeContent) {
+          var wrap = activeSwipeContent.closest('.swipe-wrap');
+          var actions = wrap ? wrap.querySelector('.swipe-actions') : null;
+          activeSwipeContent.style.transition = TRANSITION_STYLE;
+          activeSwipeContent.style.transform = '';
+          if (actions && !actions._closing) {
+            _startCloseAnim(actions);
+          }
+          activeSwipeContent = null;
+          activeSwipeActions = null;
+        }
+        isSwiping = false; isScrolling = false; isExpanded = false;
+        expandedContent = null;
+      }, { passive: true });
+
+      // Search box: trigger on Enter, fetch results, and re-render list.
+      (function() {
+        var input = document.getElementById('search-input');
+        if (!input) return;
+        input.addEventListener('keydown', async function(e) {
+          if (e.key !== 'Enter') return;
+          var q = input.value.trim();
+          if (!q) {
+            articlesData = originalArticlesData.slice();
+            document.getElementById('count').textContent = '共 ' + articlesData.length + ' 条';
+            renderList();
+            return;
+          }
+          input.disabled = true;
+          try {
+            var res = await fetch('/api/search?q=' + encodeURIComponent(q));
+            var d = await res.json();
+            if (d.success) {
+              articlesData = d.results;
+              document.getElementById('count').textContent = '共 ' + articlesData.length + ' 条';
+              renderList();
+            }
+          } catch (err) {
+            console.error('Search failed:', err);
+          } finally {
+            input.disabled = false;
+          }
+        });
+      })();
+    })();
+  </script>
+<script>
+(function(){
+  var t=localStorage.getItem('theme');
+  if(t) document.documentElement.setAttribute('data-theme',t);
+  else if(window.matchMedia('(prefers-color-scheme:dark)').matches) document.documentElement.setAttribute('data-theme','dark');
+  updateThemeIcon();
+})();
+function _setThemeColorForSidebar(open) {
+  var metas = document.querySelectorAll('meta[name="theme-color"]');
+  var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  var openColor = isDark ? '#1a1a1a' : '#ffffff';
+  var closedColor = isDark ? '#0f0f0f' : '#f5f5f5';
+  for (var i = 0; i < metas.length; i++) {
+    metas[i].setAttribute('content', open ? openColor : closedColor);
+  }
+}
+function openSidebar() {
+  document.getElementById('sidebar').classList.add('open');
+  document.getElementById('sidebarOverlay').classList.add('show');
+  document.body.classList.add('sidebar-open');
+  // Defer theme-color so first paint of transform is not blocked by chrome repaint
+  requestAnimationFrame(function() { _setThemeColorForSidebar(true); });
+}
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebarOverlay').classList.remove('show');
+  document.body.classList.remove('sidebar-open');
+  requestAnimationFrame(function() { _setThemeColorForSidebar(false); });
+  // Match QA: only re-render after search state, and after slide finishes
+  if (sidebarQuery || sidebarPostResults.length > 0) {
+    sidebarQuery = '';
+    sidebarPostResults = [];
+    var input = document.getElementById('sidebarSearch');
+    if (input) input.value = '';
+    setTimeout(function() { renderSidebar(); }, 260);
+  }
+}
+// Swipe-left to close sidebar
+(function() {
+  var sb = document.getElementById('sidebar');
+  if (!sb) return;
+  var startX = 0;
+  sb.addEventListener('touchstart', function(e) {
+    startX = e.touches[0].clientX;
+  }, { passive: true });
+  sb.addEventListener('touchend', function(e) {
+    var touch = e.changedTouches[0] || e.touches[0];
+    if (!touch) return;
+    var dx = touch.clientX - startX;
+    if (dx < -50) closeSidebar();
+  });
+})();
+var sidebarQuery = '';
+var sidebarPostResults = [];
+function escapeHtml(text) {
+  return (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function handleSidebarSearch(value) {
+  sidebarQuery = (value || '').trim();
+  sidebarPostResults = [];
+  renderSidebar();
+}
+function handleSidebarSearchKey(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    searchPostsFromSidebar();
+  }
+}
+async function searchPostsFromSidebar() {
+  if (!sidebarQuery || sidebarQuery.length < 2) return;
+  var list = document.getElementById('sidebarList');
+  if (list) list.innerHTML = '<div class="sidebar-empty" style="padding:40px 16px;text-align:center;color:var(--text-tertiary);font-size:14px;">搜索中...</div>';
+  try {
+    var res = await fetch('/api/search?q=' + encodeURIComponent(sidebarQuery));
+    var data = await res.json();
+    sidebarPostResults = (data && data.results) || [];
+  } catch (err) {
+    sidebarPostResults = [];
+  }
+  renderSidebar();
+}
+function renderSidebar() {
+  var list = document.getElementById('sidebarList');
+  if (!list) return;
+  var html = '';
+  if (sidebarQuery && sidebarPostResults.length === 0) {
+    html += '<div class="search-posts-btn" onclick="searchPostsFromSidebar()">' +
+      '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>' +
+      '<span>在帖子中搜索「' + escapeHtml(sidebarQuery) + '」</span>' +
+      '</div>';
+  }
+  if (sidebarPostResults.length > 0) {
+    html += '<div class="search-segment">帖子</div>';
+    html += sidebarPostResults.map(function(r) {
+      var title = escapeHtml(r.title || r.fileName || '');
+      return '<a class="post-result-item" href="/articles/' + r.fileName + '" onclick="closeSidebar()">' +
+        '<div class="post-result-title">' + title + '</div>' +
+        (r.author ? '<div class="post-result-meta">' + escapeHtml(r.author) + '</div>' : '') +
+        (r.snippet ? '<div class="post-result-snippet">' + escapeHtml(r.snippet) + '</div>' : '') +
+        '</a>';
+    }).join('');
+  }
+  if (sidebarQuery && sidebarPostResults.length === 0) {
+    html += '<div class="sidebar-empty" style="padding:40px 16px;text-align:center;color:var(--text-tertiary);font-size:14px;">未找到相关帖子</div>';
+  }
+  list.innerHTML = html;
+}
+function refreshPage(btn) {
+  if (btn && btn.classList) {
+    btn.classList.add('spinning');
+    setTimeout(function() { location.reload(); }, 180);
+  } else {
+    location.reload();
+  }
+}
+function toggleTheme() {
+  var c = document.documentElement.getAttribute('data-theme');
+  var n = c === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', n);
+  localStorage.setItem('theme', n);
+  updateThemeIcon();
+}
+function updateThemeIcon() {
+  var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  var s = document.getElementById('theme-icon-sun');
+  var m = document.getElementById('theme-icon-moon');
+  if (s) s.style.display = isDark ? 'none' : '';
+  if (m) m.style.display = isDark ? '' : 'none';
+  var hlLight = document.getElementById('hl-theme-light');
+  var hlDark = document.getElementById('hl-theme-dark');
+  if (hlLight) hlLight.disabled = isDark;
+  if (hlDark) hlDark.disabled = !isDark;
+}
+// Prefetch global QA suggestions while user browses list (sidebar → /qa ready)
+(function() {
+  if (window.__qaGlobalPrefetched) return;
+  window.__qaGlobalPrefetched = true;
+  try {
+    fetch('/api/qa/suggestions', { credentials: 'same-origin', cache: 'no-store' })
+      .catch(function() {});
+  } catch (e) {}
+})();
+</script>
+</div>
+</body>
+</html>

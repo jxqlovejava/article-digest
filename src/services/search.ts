@@ -661,10 +661,15 @@ export async function searchArticles(query: string): Promise<string[]> {
   const isCjk = containsCjk(normalized);
   const ftsResults = keywordSearch(normalized);
 
-  // Semantic only as sparse fallback (English). CJK embeddings are noisy.
-  if (isCjk || ftsResults.length >= 3) {
+  // CJK with hits: skip semantic (keyword is good enough for CJK)
+  if (isCjk && ftsResults.length > 0) {
     return ftsResults.slice(0, MAX_SEARCH_RESULTS);
   }
+  // Non-CJK with enough hits: skip semantic
+  if (ftsResults.length >= 3) {
+    return ftsResults.slice(0, MAX_SEARCH_RESULTS);
+  }
+  // Fall through: try semantic for CJK with 0 results, or non-CJK with < 3 results
 
   const semanticResults = await semanticSearch(normalized);
   const seen = new Set(ftsResults);

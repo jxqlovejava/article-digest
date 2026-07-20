@@ -154,6 +154,7 @@
     <div class="search-row">
       <input type="text" class="search-input" id="searchInput" placeholder="搜索帖子和历史记录..."
         autofocus onkeydown="handleSearchKey(event)" oninput="onSearchInput()">
+      <script>document.getElementById('searchInput').focus();</script>
       <button type="button" class="search-submit" id="searchSubmit" onclick="confirmSearch()">搜索</button>
     </div>
     <a href="/" class="cancel-btn">取消</a>
@@ -389,6 +390,11 @@ toggleHistory();
   if (t) document.documentElement.setAttribute('data-theme', t);
   else if (window.matchMedia('(prefers-color-scheme:dark)').matches) document.documentElement.setAttribute('data-theme', 'dark');
 })();
+// Auto-focus search input on page load (mobile autofocus is unreliable)
+setTimeout(function() {
+  var inp = document.getElementById('searchInput');
+  if (inp) { inp.focus(); inp.select(); }
+}, 100);
 </script>
 </body>
 </html>

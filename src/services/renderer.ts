@@ -34,13 +34,37 @@ marked.setOptions({
 });
 
 const IMAGE_PROXY_URL = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || 'http://127.0.0.1:7890';
+const USE_DOWNLOAD_PROXY = process.env.USE_PROXY === '1' || process.env.USE_PROXY === 'true';
 
 function getDownloadAgent() {
+  if (!USE_DOWNLOAD_PROXY) return undefined;
   try {
     return new HttpsProxyAgent(IMAGE_PROXY_URL);
   } catch {
     return undefined;
   }
+}
+
+/** Download with proxy first, then retry without proxy as fallback.
+ *  unavatar.io / Cloudflare CDN often works direct even when proxy is unstable. */
+async function downloadWithFallback(url: string, timeout = 15000): Promise<{ data: Buffer; contentType: string }> {
+  const agents = [getDownloadAgent(), undefined]; // proxy first, then direct
+  let lastErr: any;
+  for (const agent of agents) {
+    try {
+      const res = await axios.get(url, {
+        responseType: 'arraybuffer',
+        timeout,
+        maxRedirects: 5,
+        httpsAgent: agent,
+        headers: { 'User-Agent': 'TweetArchive/1.0' },
+      });
+      return { data: Buffer.from(res.data), contentType: String(res.headers['content-type'] || '') };
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr || new Error('Download failed');
 }
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -122,6 +146,32 @@ function convertMarkdownToHtml(text: string): string {
   // Only match when not already inside a markdown link (preceded by '[' or '(').
   let processed = text.replace(/(?<![\w([])@(\w{1,15})\b/g, '[@$1](https://twitter.com/$1)');
   processed = processed.replace(/(?<![\w([])#(\w{1,100})\b/g, '[#$1](https://twitter.com/hashtag/$1)');
+
+  // Convert tweet/status URLs to local article links when the tweet is archived.
+  // Matches: https://x.com/user/status/123 or https://twitter.com/user/status/123
+  const meta = loadMeta();
+  const fileNameByUrl = new Map<string, string>();
+  for (const m of meta) {
+    if (m.tweetUrl) {
+      // Normalize: strip protocol and www, handle both x.com and twitter.com
+      const normalized = m.tweetUrl.replace(/^https?:\/\/(www\.)?(x\.com|twitter\.com)\//, '');
+      fileNameByUrl.set(normalized, m.fileName);
+    }
+  }
+
+  processed = processed.replace(
+    /https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\/([A-Za-z0-9_]+)\/status\/(\d+)/g,
+    (match, username: string, tweetId: string) => {
+      const key = `${username}/status/${tweetId}`;
+      const fileName = fileNameByUrl.get(key);
+      if (fileName) {
+        return `[🔄 @${username} 的推文](articles/${fileName})`;
+      }
+      // Not archived locally — keep as original markdown link with shortened display
+      return `[🔄 @${username}/status/${tweetId}](${match})`;
+    }
+  );
+
   return marked.parse(processed) as string;
 }
 
@@ -1606,16 +1656,20 @@ function renderIndexHtml(
   <div class="sidebar-inner">
     <div class="sidebar-header">
       <h3>导航</h3>
-      <div class="sidebar-search-wrap" onclick="location.href='/search'" role="link" aria-label="搜索">
+      <a href="/search" class="sidebar-search-wrap" aria-label="搜索" style="text-decoration:none;color:inherit;display:block">
         <svg class="sidebar-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         <input type="text" class="sidebar-search" id="sidebarSearch" placeholder="搜索帖子和历史记录..." readonly tabindex="-1" aria-hidden="true">
-      </div>
+      </a>
     </div>
     <div class="sidebar-list" id="sidebarList"></div>
     <nav class="sidebar-nav">
       <a href="/qa?new=1" onclick="closeSidebar()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
         <span>知识问答</span>
+      </a>
+      <a href="/knowledge" onclick="closeSidebar()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+        <span>知识复习</span>
       </a>
     </nav>
   </div>
@@ -2325,22 +2379,15 @@ async function downloadAvatar(url: string, basePath: string): Promise<string | n
   }
 
   try {
-    const response = await axios.get(url, {
-      responseType: 'arraybuffer',
-      timeout: 15000,
-      maxRedirects: 5,
-      httpsAgent: getDownloadAgent(),
-      headers: { 'User-Agent': 'TweetArchive/1.0' },
-    });
+    const { data, contentType } = await downloadWithFallback(url);
 
-    const contentType = String(response.headers['content-type'] || '');
     let ext = '.jpg';
     if (contentType.includes('image/png')) ext = '.png';
     else if (contentType.includes('image/webp')) ext = '.webp';
     else if (contentType.includes('image/gif')) ext = '.gif';
 
     const finalPath = basePath + ext;
-    fs.writeFileSync(finalPath, Buffer.from(response.data));
+    fs.writeFileSync(finalPath, data);
     return finalPath;
   } catch (err) {
     console.error(`[avatar] Failed to download ${url}:`, err instanceof Error ? err.message : err);
@@ -2456,13 +2503,24 @@ async function downloadFile(url: string, destPath: string, referer?: string): Pr
   };
   if (ref) headers.Referer = ref;
 
-  const response = await axios.get(url, {
-    responseType: 'stream',
-    timeout: 30000,
-    maxRedirects: 5,
-    httpsAgent: getDownloadAgent(),
-    headers,
-  });
+  // Try proxy first, then direct as fallback
+  let response;
+  let lastErr: any;
+  for (const agent of [getDownloadAgent(), undefined]) {
+    try {
+      response = await axios.get(url, {
+        responseType: 'stream',
+        timeout: 30000,
+        maxRedirects: 5,
+        httpsAgent: agent,
+        headers: agent ? headers : { ...headers, Referer: headers.Referer || undefined },
+      });
+      break;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  if (!response) throw lastErr || new Error('Download failed');
 
   // Only reject non-media content types (HTML, JSON, etc.)
   // Allow image/svg+xml and empty/octet-stream (WeChat sometimes omits type).
@@ -2516,6 +2574,10 @@ export function isTweetChanged(tweetId: string, tweet: FetchedTweet): boolean {
 }
 
 export async function saveTweet(tweet: FetchedTweet): Promise<string> {
+  return saveTweetInternal(tweet, true);
+}
+
+async function saveTweetInternal(tweet: FetchedTweet, autoArchive = true): Promise<string> {
   ensureDirs();
   // Defense in depth: every source path normalizes before disk / meta write
   tweet = normalizeTweetFields(tweet);
@@ -2610,6 +2672,42 @@ export async function saveTweet(tweet: FetchedTweet): Promise<string> {
       localVideoPaths[i] = '../videos/' + vidFileName;
     } catch (err) {
       console.error(`[save] Failed to download video ${i}: ${video.url} — ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  // Auto-archive embedded tweet URLs BEFORE rendering HTML,
+  // so convertMarkdownToHtml can link to the local article page.
+  // Only at depth 0 (autoArchive=true) to avoid infinite recursion.
+  if (autoArchive) {
+    const tweetUrlPattern = /https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\/([A-Za-z0-9_]+)\/status\/(\d+)/g;
+    const embeddedUrls = new Set<string>();
+    let m;
+    while ((m = tweetUrlPattern.exec(tweet.text)) !== null) {
+      embeddedUrls.add(m[0]);
+    }
+    // Skip the tweet's own URL
+    if (tweet.url) {
+      const selfMatch = tweet.url.match(/^(https?:\/\/[^/]+\/[^/]+\/status\/\d+)/);
+      if (selfMatch) embeddedUrls.delete(selfMatch[0]);
+    }
+    if (embeddedUrls.size > 0) {
+      const { parseTweetUrl } = require('../utils/url');
+      const { fetchTweet } = require('./fetcher');
+      const existingMeta = loadMeta();
+      for (const url of embeddedUrls) {
+        if (existingMeta.some(em => em.tweetUrl === url)) continue;
+        try {
+          const parsed = parseTweetUrl(url);
+          if (!parsed) continue;
+          console.log('[auto-archive] Fetching embedded tweet:', url);
+          const embeddedTweet = await fetchTweet(parsed);
+          // Save without recursive auto-archive (depth 1)
+          await saveTweetInternal(embeddedTweet, false);
+          console.log('[auto-archive] Saved embedded tweet:', url);
+        } catch (err) {
+          console.error('[auto-archive] Failed for', url, ':', err instanceof Error ? err.message : err);
+        }
+      }
     }
   }
 

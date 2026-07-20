@@ -9,6 +9,8 @@ import { searchArticles } from './services/search';
 import { extractOpinions, extractAllOpinions, getOpinionsByArticle, linkOpinions } from './services/opinions';
 import { answerQuestion, answerQuestionStream, generateSuggestedQuestions, getOrGenerateSuggestions, useSuggestion } from './services/synthesize';
 import { isLlmEnabled } from './services/llm';
+import { registerKnowledgeRoutes } from './services/knowledge-api';
+import { traceArchive, traceRead } from './services/memory/hooks';
 
 export function createServer(): express.Express {
   const app = express();
@@ -35,6 +37,7 @@ export function createServer(): express.Express {
     const match = req.path.match(/^\/([^/]+\.html)$/);
     if (match) {
       try { await markRead(match[1]); } catch {}
+      try { await traceRead(match[1]); } catch {}
     }
     next();
   });
@@ -114,6 +117,8 @@ export function createServer(): express.Express {
         console.log(`[archive] Fetching WeChat article: ${url}`);
         const article = await fetchWechatArticle(url);
         const fileName = await saveTweet(article);
+        triggerKnowledgeAnnotation(fileName);
+        traceArchive(fileName, { title: article.title || article.author.name, author: article.author.name, sourceType: 'wechat' }).catch(() => {});
         console.log(`[archive] Saved WeChat article to ${fileName}`);
         res.json({
           success: true,
@@ -141,6 +146,8 @@ export function createServer(): express.Express {
         console.log(`[archive] Fetching web page: ${url}`);
         const article = await fetchWebPage(url);
         const fileName = await saveTweet(article);
+        triggerKnowledgeAnnotation(fileName);
+        traceArchive(fileName, { title: article.title || url, sourceType: 'webpage' }).catch(() => {});
         console.log(`[archive] Saved web page to ${fileName}`);
         res.json({
           success: true,
@@ -171,7 +178,8 @@ export function createServer(): express.Express {
       }
 
       const fileName = await saveTweet(tweet);
-
+      triggerKnowledgeAnnotation(fileName);
+      traceArchive(fileName, { title: tweet.author?.name + ' - ' + (tweet.text || '').substring(0, 50), author: tweet.author?.name, sourceType: 'tweet' }).catch(() => {});
       console.log(`[archive] Saved to ${fileName}`);
       res.json({
         success: true,
@@ -353,6 +361,41 @@ export function createServer(): express.Express {
     }
   });
 
+  // ---- Knowledge Management ----
+  registerKnowledgeRoutes(app);
+
+  /**
+   * Fire-and-forget: trigger knowledge classification, quiz generation,
+   * and spaced repetition initialization after a successful archive.
+   * Runs only when LLM is configured.
+   */
+  function triggerKnowledgeAnnotation(fileName: string) {
+    if (!isLlmEnabled()) return;
+    setTimeout(async () => {
+      try {
+        const { annotateArticle } = await import('./services/knowledge-classifier');
+        const knowledge = await annotateArticle(fileName);
+        console.log(`[knowledge] Annotated ${fileName}: ${knowledge.knowledgeType}`);
+      } catch (err) {
+        console.error('[knowledge] Auto-annotation failed:', err instanceof Error ? err.message : err);
+      }
+      try {
+        const { generateQuizForArticle } = await import('./services/quiz-generator');
+        await generateQuizForArticle(fileName);
+        console.log(`[knowledge] Quiz generated for ${fileName}`);
+      } catch {
+        // quiz generation is optional
+      }
+      try {
+        const { initializeReviews } = await import('./services/spaced-repetition');
+        await initializeReviews(fileName);
+        console.log(`[knowledge] Reviews initialized for ${fileName}`);
+      } catch {
+        // review initialization is optional
+      }
+    }, 1000);
+  }
+
   // ---- Q&A ----
 
   app.post('/api/qa', async (req, res) => {
@@ -431,8 +474,10 @@ export function createServer(): express.Express {
   app.get('/api/qa/suggestions', async (req, res) => {
     try {
       const context = typeof req.query.context === 'string' ? req.query.context : undefined;
-      const questions = await getOrGenerateSuggestions(3, context);
-      res.json({ success: true, questions });
+      const suggestions = await getOrGenerateSuggestions(3, context);
+      const questions = suggestions.map(s => s.question);
+      const contextArticles = suggestions.map(s => s.contextArticle || '');
+      res.json({ success: true, questions, contextArticles });
     } catch (err) {
       res.status(500).json({ error: 'Failed to generate suggestions' });
     }
@@ -465,6 +510,20 @@ export function createServer(): express.Express {
       res.end(html);
     } else {
       res.status(404).send('Q&A page not ready');
+    }
+  });
+
+  app.get('/knowledge', (_req, res) => {
+    const knowledgePath = path.join(getPublicDir(), 'knowledge.html');
+    if (fs.existsSync(knowledgePath)) {
+      const html = fs.readFileSync(knowledgePath, 'utf-8');
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+      });
+      res.end(html);
+    } else {
+      res.status(404).send('Knowledge page not ready');
     }
   });
 

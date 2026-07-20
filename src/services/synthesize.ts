@@ -20,6 +20,11 @@ export interface QaResult {
   sources: QaSource[];
 }
 
+export interface SuggestedQuestion {
+  question: string;
+  contextArticle: string; // empty = no source article
+}
+
 export interface QaOptions {
   contextArticle?: string;  // fileName to bias search towards
   history?: ChatMessage[];
@@ -289,7 +294,7 @@ export async function* answerQuestionStream(
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 
 interface SuggestionCache {
-  questions: string[];
+  questions: SuggestedQuestion[];
   used: number;
 }
 
@@ -303,7 +308,14 @@ function loadSuggestionsCache(contextKey: string): SuggestionCache | null {
   if (!fs.existsSync(p)) return null;
   try {
     const raw = JSON.parse(fs.readFileSync(p, 'utf-8'));
-    if (raw && Array.isArray(raw.questions)) return { questions: raw.questions, used: raw.used || 0 };
+    if (raw && Array.isArray(raw.questions)) {
+      let questions = raw.questions;
+      // Migrate old string[] cache to SuggestedQuestion[]
+      if (questions.length > 0 && typeof questions[0] === 'string') {
+        questions = (questions as string[]).map(q => ({ question: q, contextArticle: '' }));
+      }
+      return { questions, used: raw.used || 0 };
+    }
   } catch {}
   return null;
 }
@@ -326,7 +338,7 @@ function saveSuggestionsCache(contextKey: string, cache: SuggestionCache): void 
 export async function getOrGenerateSuggestions(
   count: number = 3,
   contextFileName?: string
-): Promise<string[]> {
+): Promise<SuggestedQuestion[]> {
   const key = contextFileName || '_global';
   const cached = loadSuggestionsCache(key);
 
@@ -341,7 +353,7 @@ export async function getOrGenerateSuggestions(
   }
 
   // Any prior use (or missing/empty cache) → full regenerate
-  const previous = cached?.questions || [];
+  const previous = (cached?.questions || []).map(q => q.question);
   try {
     const questions = await generateSuggestedQuestions(count, contextFileName, previous);
     if (questions.length > 0) {
@@ -397,7 +409,7 @@ export async function generateSuggestedQuestions(
   count: number = 3,
   contextFileName?: string,
   previousQuestions: string[] = []
-): Promise<string[]> {
+): Promise<SuggestedQuestion[]> {
   if (!isLlmEnabled()) return [];
 
   const messages: ChatMessage[] = [];
@@ -409,6 +421,7 @@ export async function generateSuggestedQuestions(
       : '';
 
   if (contextFileName) {
+    // ── Per-article path: always use contextFileName as source ──
     const htmlPath = path.join(getArticlesDir(), contextFileName);
     if (fs.existsSync(htmlPath)) {
       const html = fs.readFileSync(htmlPath, 'utf-8');
@@ -434,22 +447,68 @@ export async function generateSuggestedQuestions(
   }
 
   if (messages.length === 0) {
+    // ── Global path: include article_filename, ask LLM for referenceArticle ──
     const opinions = getAllOpinions();
     if (opinions.length === 0) return [];
 
-    // Sample opinions from different articles
     const sampled = opinions.slice(0, 20);
-    const topicList = sampled.map(o => `[${o.category}] ${o.content.substring(0, 150)}`).join('\n');
+    const topicList = sampled
+      .map(o => `[${o.category}] ${o.content.substring(0, 150)} (来源: ${o.article_filename})`)
+      .join('\n');
+
+    const meta = loadMeta();
+    const validFileNames = new Set(meta.map(m => m.fileName));
 
     messages.push(
       {
         role: 'system',
-        content: `基于以下知识库中的观点，生成恰好${count}个用户可能感兴趣的中文问题。问题应该自然、多样，覆盖不同主题。返回JSON格式：{"questions": ["问题1", "问题2", ...]}，questions 数组长度必须为 ${count}。${avoidBlock}`,
+        content: `基于以下知识库中的观点，生成恰好${count}个用户可能感兴趣的中文问题。问题应该自然、多样，覆盖不同主题。
+
+返回严格 JSON 格式：
+{"questions": [{"question": "...", "referenceArticle": "..."}]}
+
+每条请填写 referenceArticle 字段为对应观点来源的文章文件名。referenceArticle 必须来自下方提供的"来源"字段，不能编造。questions 数组长度必须为 ${count}。${avoidBlock}`,
       },
       { role: 'user', content: topicList }
     );
+
+    try {
+      const { chatWithJson } = await import('./llm');
+      const result = await chatWithJson<{
+        questions: { question: string; referenceArticle?: string }[];
+      }>(messages, { temperature: 0.9 });
+      const rawItems = (result.questions || []).filter(
+        item => item && typeof item.question === 'string' && item.question.trim()
+      );
+
+      // Build SuggestedQuestion[]: validate referenceArticle against meta
+      const suggested: SuggestedQuestion[] = rawItems.map(item => {
+        const question = item.question.trim();
+        let contextArticle = '';
+        if (
+          typeof item.referenceArticle === 'string' &&
+          item.referenceArticle &&
+          validFileNames.has(item.referenceArticle)
+        ) {
+          contextArticle = item.referenceArticle;
+        }
+        return { question, contextArticle };
+      });
+
+      // De-duplicate against previous batch
+      const prevSet = new Set(previousQuestions.map(q => q.trim()));
+      const unique = suggested.filter(sq => !prevSet.has(sq.question));
+      const merged =
+        unique.length >= count
+          ? unique
+          : [...unique, ...suggested.filter(sq => !unique.some(u => u.question === sq.question))];
+      return merged.slice(0, count);
+    } catch {
+      return [];
+    }
   }
 
+  // Per-article path: common LLM call, wrap each question with contextArticle
   try {
     const { chatWithJson } = await import('./llm');
     const result = await chatWithJson<{ questions: string[] }>(messages, { temperature: 0.9 });
@@ -460,7 +519,7 @@ export async function generateSuggestedQuestions(
     const prevSet = new Set(previousQuestions.map(q => q.trim()));
     const unique = qs.filter(q => !prevSet.has(q));
     const merged = unique.length >= count ? unique : [...unique, ...qs.filter(q => !unique.includes(q))];
-    return merged.slice(0, count);
+    return merged.slice(0, count).map(q => ({ question: q, contextArticle: contextFileName || '' }));
   } catch {
     return [];
   }

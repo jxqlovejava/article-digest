@@ -12,6 +12,8 @@ import {
   type PhotoSink,
 } from './htmlToMarkdown';
 import { convertHtmlWithMarkitdown } from './markitdownBridge';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const PROXY_URL = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || 'http://127.0.0.1:7890';
 const USE_PROXY = process.env.USE_PROXY === '1' || process.env.USE_PROXY === 'true';
@@ -46,35 +48,117 @@ async function resolveUrl(url: string): Promise<string> {
 
 type ArticleContent = { title: string; text: string; photos: TweetPhoto[]; videos: TweetVideo[]; authorName: string; authorScreenName: string; authorAvatar: string; likes: number; retweets: number; replies: number };
 
-/** Stub: full X Article content via browser is not available on this server
- *  (Chromium requires >4GB RAM). Use xarticle-mcp from Claude Code instead. */
-async function fetchArticleViaBrowser(_articleId: string): Promise<ArticleContent | null> {
+/** Fetch full X Article content via Playwright (headless Chromium).
+ *  Renders the article page with auth cookies so all inline links are preserved.
+ *  Used as primary path for link-card tweets where GraphQL only returns preview_text. */
+export async function fetchArticleViaPlaywright(tweetUrl: string): Promise<ArticleContent | null> {
+  const authToken = process.env.X_AUTH_TOKEN;
+  const ct0 = process.env.X_CT0;
+  if (!authToken) return null;
+
+  let browser: any = null;
+  let owned = false;
+  try {
+    const { chromium } = await import('playwright');
+
+    // Try connecting to an existing Chrome via CDP first (best anti-detection)
+    const cdpPorts = [64355, 9222, 9223, 9224, 9225];
+    for (const port of cdpPorts) {
+      try {
+        browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+        owned = false;
+        break;
+      } catch { /* try next port */ }
+    }
+
+    // Fall back: launch a new browser
+    if (!browser) {
+      browser = await chromium.launch({
+        headless: true,
+        proxy: USE_PROXY ? { server: PROXY_URL } : undefined,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-blink-features=AutomationControlled',
+          '--disable-features=IsolateOrigins,site-per-process',
+          '--enable-features=NetworkService,NetworkServiceInProcess',
+        ],
+      });
+      owned = true;
+    }
+
+    const context = owned
+      ? await browser.newContext({
+          viewport: { width: 1280, height: 900 },
+          userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          bypassCSP: true,
+        })
+      : browser.contexts()[0];
+
+    await context.addCookies([
+      { name: 'auth_token', value: authToken, domain: '.x.com', path: '/' },
+      { name: 'ct0', value: ct0 || '', domain: '.x.com', path: '/' },
+    ]);
+
+    const page = await context.newPage();
+    await page.addInitScript(`
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+      window.chrome = { runtime: {} };
+    `);
+
+    await page.goto(tweetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(5000);
+
+    // DOM-to-markdown loaded from external .js file to avoid
+    // TypeScript/tsx helpers breaking page.evaluate().
+    const extractScript = fs.readFileSync(path.join(__dirname, 'pw-extract.js'), 'utf-8');
+    const result = await page.evaluate(`(${extractScript})`);
+
+    if (!result?.text) return null;
+
+    return {
+      title: result.title || '',
+      text: result.text,
+      photos: [],
+      videos: [],
+      authorName: '',
+      authorScreenName: '',
+      authorAvatar: '',
+      likes: 0,
+      retweets: 0,
+      replies: 0,
+    };
+  } catch (e) {
+    console.error('[playwright] Article fetch failed:', e instanceof Error ? e.message : String(e));
+    return null;
+  } finally {
+    if (browser && owned) await browser.close().catch(() => {});
+  }
+}
+
+/** @deprecated Replaced by fetchArticleViaPlaywright — kept as thin wrapper. */
+async function fetchArticleViaBrowser(articleId: string): Promise<ArticleContent | null> {
   return null;
 }
 
-/** Fetch full X Article content via X internal GraphQL API.
- *  Falls back gracefully if auth_token is not configured. */
+/** Fetch X Article card content via X internal GraphQL API.
+ *  Returns preview_text when full content_state is not available.
+ *  Falls back gracefully if auth_token is not configured or request fails. */
 async function fetchArticleViaGraphQL(tweetId: string): Promise<{ title: string; text: string; photos: TweetPhoto[]; videos: TweetVideo[]; authorName: string; authorScreenName: string; authorAvatar: string; likes: number; retweets: number; replies: number } | null> {
   const authToken = process.env.X_AUTH_TOKEN;
   const ct0 = process.env.X_CT0;
-  try {
-    // Step 1: get guest token (no auth needed, provides Bearer token)
-    const guestRes = await axios.post('https://api.x.com/1.1/guest/activate.json',
-      null, { headers: { 'User-Agent': 'TweetArchive/1.0' }, timeout: 10000, httpsAgent: getAgent() });
-    const guestToken = guestRes.data?.guest_token;
-    if (!guestToken) return null;
+  if (!authToken) return null;
 
-    // Step 2: call TweetDetail with article content flags
+  try {
+    // Auth-only endpoint: guest activation often 403s; auth cookies are enough.
     const headers: Record<string, string> = {
       'User-Agent': 'TweetArchive/1.0',
       'authorization': `Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA`,
       'x-twitter-active-user': 'yes',
       'x-twitter-client-language': 'en',
+      'cookie': `auth_token=${authToken}; ct0=${ct0 || ''};`,
+      'x-csrf-token': ct0 || '',
     };
-    if (authToken) {
-      headers['cookie'] = `auth_token=${authToken}; ct0=${ct0};`;
-      headers['x-csrf-token'] = ct0 || guestToken;
-    }
 
     const variables = {
       focalTweetId: tweetId,
@@ -106,7 +190,7 @@ async function fetchArticleViaGraphQL(tweetId: string): Promise<{ title: string;
     const instructions = res.data?.data?.threaded_conversation_with_injections_v2?.instructions;
     if (!instructions) return null;
 
-    // Walk instructions to find the tweet entry
+    // Walk instructions to find the tweet entry (handle TweetWithVisibilityResults wrapper)
     let articleResult: any = null;
     let tweetLegacy: any = null;
     let tweetCore: any = null;
@@ -114,14 +198,15 @@ async function fetchArticleViaGraphQL(tweetId: string): Promise<{ title: string;
     for (const inst of instructions) {
       const entries = inst.entries || inst.moduleItems || [];
       for (const entry of entries) {
-        const tweet = entry.content?.itemContent?.tweet_results?.result || entry.entry?.content?.itemContent?.tweet_results?.result;
+        const outer = entry.content?.itemContent?.tweet_results?.result || entry.entry?.content?.itemContent?.tweet_results?.result;
+        const tweet = outer?.tweet || outer;
         const legacy = tweet?.legacy;
         if (!legacy) continue;
         tweetLegacy = legacy;
         tweetCore = tweet?.core;
         tweetStats = tweet?.views || legacy;
         const article = tweet?.article?.article_results?.result;
-        if (article?.content_state?.blocks) {
+        if (article?.title || article?.preview_text) {
           articleResult = article;
         }
       }
@@ -129,17 +214,22 @@ async function fetchArticleViaGraphQL(tweetId: string): Promise<{ title: string;
 
     if (!articleResult) return null;
 
-    // Parse using existing Draft.js parser
+    // Parse using existing Draft.js parser; content_state may be empty for link-card previews.
+    const contentState = articleResult.content_state || {};
     const parsed = parseArticleContent({
       title: articleResult.title,
-      content: { entityMap: articleResult.content_state?.entityMap || [] },
+      content: { entityMap: contentState.entityMap || [], blocks: contentState.blocks || [] },
       cover_media: articleResult.cover_media,
       media_entities: articleResult.media_entities || [],
     });
     parsed.text = parseDraftJsBlocks(
-      articleResult.content_state?.blocks || [],
-      new Map((articleResult.content_state?.entityMap || []).map((e: any) => [e.key, e.value]))
+      contentState.blocks || [],
+      new Map((contentState.entityMap || []).map((e: any) => [e.key, e.value]))
     );
+    // Fallback to preview text when full article body is not exposed.
+    if (!parsed.text?.trim() && articleResult.preview_text) {
+      parsed.text = articleResult.preview_text;
+    }
 
     const userResult = tweetCore?.user_results?.result?.legacy || {};
     return {
@@ -185,6 +275,53 @@ const DEFAULT_FEATURES = {
 async function expandQuoteOrRetweet(tweet: any, depth = 0): Promise<any> {
   if (depth > 1 || !tweet) return tweet;
 
+  /** Try to resolve a link-card tweet (empty text, raw_text is a t.co URL) into article content. */
+  async function resolveLinkCard(linkCard: any): Promise<{ title: string; text: string; photos: TweetPhoto[]; videos: TweetVideo[] } | null> {
+    if (!linkCard?.id) return null;
+
+    // 1) Try GraphQL first (fast, no browser overhead)
+    const graphQlResult = await fetchArticleViaGraphQL(linkCard.id);
+    const gqlText = graphQlResult?.text?.trim() || '';
+
+    // Check if GraphQL returned full content with links (markdown link syntax).
+    // preview_text has no links; content_state blocks produce markdown links.
+    const hasLinks = /\[.+\]\(https?:\/\/.+\)/.test(gqlText);
+    if (gqlText && hasLinks) {
+      return {
+        title: graphQlResult!.title,
+        text: gqlText,
+        photos: graphQlResult!.photos || [],
+        videos: graphQlResult!.videos || [],
+      };
+    }
+
+    // 2) GraphQL returned preview_text only (no links) — try Playwright for full body
+    if (linkCard.url) {
+      const pwResult = await fetchArticleViaPlaywright(linkCard.url);
+      if (pwResult?.text?.trim()) {
+        // Prefer GraphQL metadata (author, stats) when available
+        return {
+          title: pwResult.title || graphQlResult?.title || '',
+          text: pwResult.text,
+          photos: pwResult.photos,
+          videos: pwResult.videos,
+        };
+      }
+    }
+
+    // 3) Fall back to GraphQL preview_text (better than nothing)
+    if (gqlText) {
+      return {
+        title: graphQlResult!.title,
+        text: gqlText,
+        photos: graphQlResult!.photos || [],
+        videos: graphQlResult!.videos || [],
+      };
+    }
+
+    return null;
+  }
+
   // Quote tweet: always expand the quoted original alongside the commentary.
   if (tweet.quote?.url) {
     let q = tweet.quote;
@@ -200,6 +337,19 @@ async function expandQuoteOrRetweet(tweet: any, depth = 0): Promise<any> {
         }
       } catch {
         // Keep the quote as-is; the card preview is still better than nothing.
+      }
+    }
+
+    // Still empty? It may be a link-card / X Article whose body FxTwitter does not expose.
+    if (!q.text?.trim() && q.raw_text?.text?.includes('t.co')) {
+      const resolved = await resolveLinkCard(q);
+      if (resolved) {
+        q = {
+          ...q,
+          text: resolved.text,
+          title: resolved.title,
+          media: { photos: resolved.photos, videos: resolved.videos },
+        };
       }
     }
 
@@ -281,25 +431,19 @@ async function expandQuoteOrRetweet(tweet: any, depth = 0): Promise<any> {
       if (!isRealRetweet) {
         return tweet; // Regular short tweet with a link — keep original title/text
       }
+      // Link-card / X Article: prefer GraphQL auth endpoint over headless browser.
+      const linkCard = await resolveLinkCard(tweet);
+      if (linkCard) {
+        return {
+          ...tweet,
+          text: linkCard.text,
+          title: linkCard.title || tweet.title || '',
+          media: tweet.media || { photos: linkCard.photos, videos: linkCard.videos },
+        };
+      }
       try {
         const resolved = await resolveUrl(tcoMatch[0]);
-        // X Article: use headless browser to fetch full content
-        if (/\/i\/article\//.test(resolved)) {
-          const articleIdMatch = resolved.match(/\/(\d+)(?:\?|$)/);
-          const articleId = articleIdMatch ? articleIdMatch[1] : '';
-          if (articleId) {
-            const browserResult = await fetchArticleViaBrowser(articleId);
-            if (browserResult && browserResult.text.length > 30) {
-              return {
-                ...tweet,
-                text: browserResult.text,
-                title: browserResult.title || tweet.title || '',
-                media: tweet.media || { photos: browserResult.photos },
-              };
-            }
-          }
-        }
-        // Fallback: try FxTwitter with resolved URL
+        // Fallback: try FxTwitter with resolved URL if it points to another tweet.
         const parsed = parseTweetUrl(resolved);
         if (parsed) {
           const original = await fetchFromFxTwitter(parsed);
@@ -490,6 +634,7 @@ export interface FetchedTweet {
   article?: any;
   is_note_tweet?: boolean;
   sourceType?: 'twitter' | 'wechat' | 'webpage';
+  raw_text?: { text: string; display_text_range?: number[]; facets?: any[] };
 }
 
 export interface FxTwitterResponse {
@@ -646,6 +791,53 @@ function parseJinaAiContent(rawText: string, parsed: ParsedTweetUrl): { title: s
   return { title, text: content || rawText, photos };
 }
 
+/** Apply entity links and inline styles to a block's text.
+ *  Processes entityRanges (LINK → markdown) and inlineStyleRanges
+ *  together, right-to-left by offset so overlapping ranges nest correctly. */
+function applyInlineFormatting(
+  text: string,
+  entityRanges: Array<{ key: number; length: number; offset: number }> | undefined,
+  inlineStyleRanges: Array<{ offset: number; length: number; style: string }> | undefined,
+  entityMap: Map<number, any>,
+): string {
+  const mods: Array<{ offset: number; end: number; prefix: string; suffix: string }> = [];
+
+  // Collect entity-based modifications (LINK, TWEET)
+  for (const r of (entityRanges || [])) {
+    const ent = entityMap.get(r.key);
+    if (!ent) continue;
+    if (ent.type === 'LINK' && ent.data?.url) {
+      mods.push({ offset: r.offset, end: r.offset + r.length, prefix: '[', suffix: `](${ent.data.url})` });
+    } else if (ent.type === 'TWEET') {
+      const url = ent.data?.url || (ent.data?.tweetId ? `https://x.com/i/status/${ent.data.tweetId}` : '');
+      if (url) {
+        mods.push({ offset: r.offset, end: r.offset + r.length, prefix: '[', suffix: `](${url})` });
+      }
+    }
+  }
+
+  // Collect inline-style modifications
+  for (const r of (inlineStyleRanges || [])) {
+    let prefix = ''; let suffix = '';
+    switch (r.style) {
+      case 'Bold': prefix = '**'; suffix = '**'; break;
+      case 'Italic': prefix = '*'; suffix = '*'; break;
+      case 'Underline': prefix = '<u>'; suffix = '</u>'; break;
+      case 'Strikethrough': prefix = '~~'; suffix = '~~'; break;
+      case 'Code': prefix = '`'; suffix = '`'; break;
+    }
+    if (prefix) mods.push({ offset: r.offset, end: r.offset + r.length, prefix, suffix });
+  }
+
+  // Apply right-to-left so each modification leaves earlier offsets intact
+  mods.sort((a, b) => b.offset - a.offset);
+  for (const m of mods) {
+    text = text.substring(0, m.offset) + m.prefix + text.substring(m.offset, m.end) + m.suffix + text.substring(m.end);
+  }
+
+  return text;
+}
+
 function parseDraftJsBlocks(blocks: Array<{ text: string; type: string; depth?: number; entityRanges?: Array<{ key: number; length: number; offset: number }>; inlineStyleRanges?: Array<{ offset: number; length: number; style: string }> }>, entityMap: Map<number, any>): string {
   let result = '';
   let inCodeBlock = false;
@@ -735,15 +927,15 @@ function parseDraftJsBlocks(blocks: Array<{ text: string; type: string; depth?: 
       }
 
       case 'header-one':
-        result += `# ${block.text}\n\n`;
+        result += `# ${applyInlineFormatting(block.text, block.entityRanges, block.inlineStyleRanges, entityMap)}\n\n`;
         continue;
 
       case 'header-two':
-        result += `## ${block.text}\n\n`;
+        result += `## ${applyInlineFormatting(block.text, block.entityRanges, block.inlineStyleRanges, entityMap)}\n\n`;
         continue;
 
       case 'header-three':
-        result += `### ${block.text}\n\n`;
+        result += `### ${applyInlineFormatting(block.text, block.entityRanges, block.inlineStyleRanges, entityMap)}\n\n`;
         continue;
 
       case 'code-block': {
@@ -756,14 +948,14 @@ function parseDraftJsBlocks(blocks: Array<{ text: string; type: string; depth?: 
       }
 
       case 'blockquote':
-        result += `> ${block.text}\n\n`;
+        result += `> ${applyInlineFormatting(block.text, block.entityRanges, block.inlineStyleRanges, entityMap)}\n\n`;
         continue;
 
       case 'ordered-list-item': {
         inOList = true;
         listCounter++;
         const indent = '   '.repeat(block.depth || 0);
-        result += `${indent}${listCounter}. ${block.text}\n`;
+        result += `${indent}${listCounter}. ${applyInlineFormatting(block.text, block.entityRanges, block.inlineStyleRanges, entityMap)}\n`;
         if (!nextBlock || nextBlock.type !== 'ordered-list-item') {
           inOList = false;
           listCounter = 0;
@@ -775,7 +967,7 @@ function parseDraftJsBlocks(blocks: Array<{ text: string; type: string; depth?: 
       case 'unordered-list-item': {
         inUList = true;
         const indent = '   '.repeat(block.depth || 0);
-        result += `${indent}- ${block.text}\n`;
+        result += `${indent}- ${applyInlineFormatting(block.text, block.entityRanges, block.inlineStyleRanges, entityMap)}\n`;
         if (!nextBlock || nextBlock.type !== 'unordered-list-item') {
           inUList = false;
           result += '\n';
@@ -785,21 +977,7 @@ function parseDraftJsBlocks(blocks: Array<{ text: string; type: string; depth?: 
 
       case 'unstyled':
       default: {
-        let text = block.text;
-        const ranges = block.inlineStyleRanges || [];
-        for (let j = ranges.length - 1; j >= 0; j--) {
-          const r = ranges[j];
-          const styled = text.substring(r.offset, r.offset + r.length);
-          let wrapped = styled;
-          switch (r.style) {
-            case 'Bold': wrapped = `**${styled}**`; break;
-            case 'Italic': wrapped = `*${styled}*`; break;
-            case 'Underline': wrapped = `<u>${styled}</u>`; break;
-            case 'Strikethrough': wrapped = `~~${styled}~~`; break;
-            case 'Code': wrapped = '`' + styled + '`'; break;
-          }
-          text = text.substring(0, r.offset) + wrapped + text.substring(r.offset + r.length);
-        }
+        const text = applyInlineFormatting(block.text, block.entityRanges, block.inlineStyleRanges, entityMap);
         if (text.trim()) {
           result += text + '\n\n';
         } else {
@@ -904,6 +1082,37 @@ async function fetchFromFxTwitter(parsed: ParsedTweetUrl): Promise<FetchedTweet>
     title = articleData.title;
     articlePhotos = articleData.photos;
     articleVideos = articleData.videos;
+  }
+
+  // Link-card tweet: FxTwitter may return only a t.co URL; use GraphQL auth endpoint
+  // to fetch the X Article preview/body when available.
+  if ((!text || text.trim().length <= 30) && tweet.raw_text?.text?.includes('t.co')) {
+    const gqlArticle = await fetchArticleViaGraphQL(tweet.id);
+    const gqlText = gqlArticle?.text?.trim() || '';
+    const hasLinks = /\[.+\]\(https?:\/\/.+\)/.test(gqlText);
+
+    if (gqlText && hasLinks) {
+      // GraphQL returned full content_state with inline links
+      text = gqlText;
+      title = gqlArticle!.title || title;
+      articlePhotos = gqlArticle!.photos || [];
+      articleVideos = gqlArticle!.videos || [];
+    } else {
+      // GraphQL returned only preview_text (no links) — try Playwright
+      const pwResult = await fetchArticleViaPlaywright(tweet.url);
+      if (pwResult?.text?.trim()) {
+        text = pwResult.text;
+        title = pwResult.title || gqlArticle?.title || title;
+        articlePhotos = pwResult.photos;
+        articleVideos = pwResult.videos;
+      } else if (gqlText) {
+        // Fall back to preview_text
+        text = gqlText;
+        title = gqlArticle!.title || title;
+        articlePhotos = gqlArticle!.photos || [];
+        articleVideos = gqlArticle!.videos || [];
+      }
+    }
   }
 
   if (!title && tweet.title) {
