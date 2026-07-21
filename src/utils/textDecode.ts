@@ -68,6 +68,14 @@ function decodeHtmlEntitiesOnce(text: string): string {
 /** JS-style unicode escapes: \u4e2d \u{1F600} (and doubled \\u from JSON-ish sources). */
 function decodeUnicodeEscapes(text: string): string {
   let s = text;
+  // JavaScript string escapes from source extraction (e.g. WeChat `msg_title`
+  // containing literal \n). The \\\\ → placeholder dance ensures that a
+  // backslash that was originally escaped in JS source (\\\\ → one \) is not
+  // later consumed as part of a \\n.
+  const BSLASH = ''; // private-use codepoint as temporary placeholder
+  s = s.replace(/\\\\/g, BSLASH);
+  s = s.replace(/\\n/g, '\n');
+  s = s.replace(new RegExp(BSLASH, 'g'), '\\');
   // \u{XXXXX}
   s = s.replace(/\\u\{([0-9a-fA-F]{1,6})\}/g, (_m, hex: string) => {
     try {

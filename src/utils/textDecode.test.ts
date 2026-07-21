@@ -30,4 +30,27 @@ describe('normalizeScrapedText', () => {
     assert.equal(normalizeAuthorField('小灰&nbsp;&amp;amp;&nbsp;阿咕噜'), '小灰 & 阿咕噜');
     assert.equal(normalizeAuthorField('tin&amp;#39;y'), "tin'y");
   });
+
+  it('decodes JavaScript \\n and \\\\ escapes from source extraction', () => {
+    // WeChat sometimes puts literal \n in msg_title (JS source string escapes)
+    assert.equal(
+      normalizeScrapedText('第一行\\n第二行\\n第三行'),
+      '第一行\n第二行\n第三行'
+    );
+    // escaped backslash (\\\\ in JS source = single literal \)
+    assert.equal(
+      normalizeScrapedText('path\\\\to\\\\file'),
+      'path\\to\\file'
+    );
+    // \t, \", \' etc. are NOT decoded (only \n and \\ are handled); these
+    // stay as literal backslash sequences in the output
+    assert.equal(
+      normalizeScrapedText('a\\tb'),
+      'a\\tb'
+    );
+    assert.equal(
+      normalizeScrapedText('he said \\"hello\\"'),
+      'he said \\"hello\\"'
+    );
+  });
 });

@@ -1430,6 +1430,7 @@ export async function fetchWechatArticle(url: string): Promise<FetchedTweet> {
     if (ogTitle) title = ogTitle[1];
   }
   title = normalizeScrapedText(title);
+  // Guard: title truncation is done after content processing (see below).
 
   // Author — same htmlDecode / entity issue as title (e.g. 营销&amp;交易技术)
   let author = '';
@@ -1515,6 +1516,14 @@ export async function fetchWechatArticle(url: string): Promise<FetchedTweet> {
   if (contentMatch) {
     contentHtml = contentMatch[1].trim();
   }
+  // Fallback: try #rich_media_content (newer WeChat article templates)
+  if (!contentHtml) {
+    const fallbackMatch = html.match(/<div[^>]*id="rich_media_content"[^>]*>([\s\S]*?)<\/div>\s*(?:<script|<div class="rich_media_tool"|<div id="js_tags)/);
+    if (fallbackMatch) {
+      contentHtml = fallbackMatch[1].trim();
+      console.warn('[wechat] js_content empty — used rich_media_content fallback');
+    }
+  }
 
   // WeChat code blocks: multi-<code> lines + line-index <ul><li> bullets.
   // Without WeChat CSS those empty <li>s render as disc dots and lines collapse.
@@ -1573,11 +1582,38 @@ export async function fetchWechatArticle(url: string): Promise<FetchedTweet> {
   const id = extractWechatId(url);
 
   const authorFinal = author || '微信公众号';
+
+  // Guard: when the WeChat template puts the full article body into msg_title
+  // AND js_content / rich_media_content are empty, title is unreasonably long
+  // while text is empty. Auto-correct: use title as text, derive short title.
+  const MAX_TITLE_LEN = 200;
+  let finalTitle = title || '微信公众号文章';
+  let finalText = text;
+  if (finalTitle.length > MAX_TITLE_LEN && (!finalText || finalText.trim().length < 50)) {
+    console.warn(
+      `[wechat] Title is ${finalTitle.length} chars but content is ${finalText ? finalText.length : 0} chars — swapping title↔text`
+    );
+    // Convert plain-text title into basic HTML paragraphs so the renderer
+    // (which passes wechat text through as raw HTML) shows readable output.
+    const htmlEscape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const paragraphs = finalTitle
+      .split('\n')
+      .map(l => l.trim())
+      .filter(l => l.length > 0)
+      .map(l => `<p>${htmlEscape(l)}</p>`)
+      .join('\n');
+    finalText = paragraphs;
+    finalTitle = deriveTitle(finalTitle, 80) || finalTitle.substring(0, 80);
+  } else if (finalTitle.length > MAX_TITLE_LEN) {
+    console.warn(`[wechat] Title is ${finalTitle.length} chars — truncating to ${MAX_TITLE_LEN}`);
+    finalTitle = finalTitle.substring(0, MAX_TITLE_LEN);
+  }
+
   return {
     id,
     url,
-    text,
-    title: title || '微信公众号文章',
+    text: finalText,
+    title: finalTitle,
     author: {
       name: authorFinal,
       screen_name: authorFinal === '微信公众号' ? 'wechat' : authorFinal,

@@ -129,10 +129,27 @@ function decodeHtmlEntities(text: string): string {
 
 /** Ensure tweet text fields are plain Unicode before escapeHtml / meta write. */
 function normalizeTweetFields(tweet: FetchedTweet): FetchedTweet {
+  let title = tweet.title != null ? normalizeScrapedText(tweet.title) : tweet.title;
+  let text = normalizeScrapedText(tweet.text || '');
+
+  // Safety net: if title is excessively long (>200 chars) and text is empty or
+  // very short, the content likely leaked into the title field (e.g. WeChat
+  // article with a non-standard template). Swap: use title as text and derive a
+  // proper short title from it.
+  const MAX_TITLE = 200;
+  if (title && title.length > MAX_TITLE && (!text || text.length < 100)) {
+    console.warn(
+      `[renderer] Title is ${title.length} chars but text is ${text.length} chars — ` +
+      `content leaked into title. Swapping: using title as text, re-deriving title.`
+    );
+    text = title;
+    title = deriveTitle(text, 80) || text.substring(0, 80);
+  }
+
   return {
     ...tweet,
-    title: tweet.title != null ? normalizeScrapedText(tweet.title) : tweet.title,
-    text: normalizeScrapedText(tweet.text || ''),
+    title,
+    text,
     author: {
       ...tweet.author,
       name: normalizeAuthorField(tweet.author?.name),
@@ -1819,14 +1836,10 @@ function renderIndexHtml(
     function markRead(id) {
       const item = articlesData.find(a => a.fileName === id + '.html');
       if (item && item.unread) {
-        // Fire-and-forget: sendBeacon for reliable delivery during navigation
-        const data = JSON.stringify({ id: id + '.html' });
-        if (navigator.sendBeacon) {
-          navigator.sendBeacon('/api/read', new Blob([data], { type: 'application/json' }));
-        } else {
-          fetch('/api/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: data, keepalive: true });
-        }
         item.unread = false;
+        const data = JSON.stringify({ id: id + '.html' });
+        fetch('/api/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: data, keepalive: true })
+          .catch(function() {});
         setTimeout(renderList, 150);
       }
     }
@@ -1839,11 +1852,12 @@ function renderIndexHtml(
         var dot = document.querySelector('#item-' + id + ' .unread-dot');
         if (dot) dot.style.display = 'none';
         const data = JSON.stringify({ id: id + '.html' });
-        if (navigator.sendBeacon) {
-          navigator.sendBeacon('/api/read', new Blob([data], { type: 'application/json' }));
-        } else {
-          fetch('/api/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: data, keepalive: true });
-        }
+        // Use fetch instead of sendBeacon — sendBeacon defers to page unload, so if the
+        // user quickly navigates back (Fast Back / bfcache) the server may not have
+        // processed it yet, and the stale index.html / meta.json gets served.
+        // fetch + keepalive fires immediately; the .catch ensures fire-and-forget.
+        fetch('/api/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: data, keepalive: true })
+          .catch(function() {});
       }
     }
 
@@ -2562,8 +2576,11 @@ export function isTweetChanged(tweetId: string, tweet: FetchedTweet): boolean {
   const suffix = '_' + tweetId + '.html';
   const existing = meta.find(m => m.fileName.endsWith(suffix));
   if (!existing) return true;
-  const newTitle = tweet.title || tweet.text.split('\n')[0].substring(0, 80);
-  const newKey = tweet.text.substring(0, 200);
+  // Normalize before comparing so title-truncation / title↔text swap doesn't
+  // cause false-positive "changes" on every re-check.
+  const normalized = normalizeTweetFields(tweet);
+  const newTitle = normalized.title || normalized.text.split('\n')[0].substring(0, 80);
+  const newKey = normalized.text.substring(0, 200);
   return (
     existing.title !== newTitle ||
     existing.contentKey !== newKey ||
