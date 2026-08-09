@@ -1400,6 +1400,23 @@ function collectAuthorRepliesFromItems(
   return out;
 }
 
+/** 用 FxTwitter 单推接口补齐回复完整文本。
+ *  GraphQL TweetDetail 的 full_text 会把某些回复截断(实测:截断在序号"❼"处,丢了规则正文),
+ *  FxTwitter 返回完整内容。取两者更长者。 */
+async function fetchReplyFullText(replyId: string, screenName: string): Promise<string | null> {
+  try {
+    const res = await axios.get(`https://api.fxtwitter.com/${screenName}/status/${replyId}`, {
+      headers: { 'User-Agent': 'TweetArchive/1.0' },
+      timeout: 15000,
+      httpsAgent: getAgent(),
+    });
+    const text = res.data?.tweet?.text;
+    return typeof text === 'string' && text.trim() ? text.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 /** 走已认证 GraphQL TweetDetail 端点抓取作者在评论区的自回帖。bounded 分页(≤3 页,无 bottom cursor 即停)。 */
 async function fetchAuthorSelfReplies(tweetId: string, authorScreenName: string): Promise<AuthorReply[]> {
   const authToken = process.env.X_AUTH_TOKEN;
@@ -1477,6 +1494,13 @@ async function fetchAuthorSelfReplies(tweetId: string, authorScreenName: string)
 
   // 阅读顺序:时间升序
   replies.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+  // FxTwitter 补齐可能被 GraphQL 截断的完整文本(并行)
+  await Promise.all(replies.map(async (r) => {
+    const full = await fetchReplyFullText(r.id, authorScreenName);
+    if (full && full.length > r.text.length) r.text = full;
+  }));
+
   return replies;
 }
 
@@ -1526,12 +1550,13 @@ function mergeAuthorReplies(tweet: FetchedTweet, replies: AuthorReply[]): Fetche
       mergedVideos.push(v);
       rt += `\n[VIDEO:${newIdx}]`;
     }
-    parts.push(rt.split('\n').map(l => `> ${l}`).join('\n'));
+    parts.push(rt);
   }
   if (parts.length === 0) return tweet;
+  // 直接拼接进正文,不加标题/引用标记——读起来像一篇连续的文章
   return {
     ...tweet,
-    text: `${tweet.text}\n\n---\n\n**作者在评论区的补充**\n\n${parts.join('\n\n')}`,
+    text: `${tweet.text}\n\n${parts.join('\n\n')}`,
     media: mergedPhotos.length || mergedVideos.length
       ? { photos: mergedPhotos, videos: mergedVideos }
       : tweet.media,

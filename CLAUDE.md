@@ -47,8 +47,9 @@ docker-compose 管理双容器：nginx（反向代理 + gzip）→ app（Express
 - **触发**: 主推文正文「明显未完结」(引子/预告/列 N 条只写部分)时,自动抓作者在评论区的自回帖并入正文,合成一篇
 - **判断**: LLM 读正文判完整性,`prompts/comments/detect-incomplete.md`;只有未完结才抓(省掉每篇都抓评论的延迟);完结推文直接跳过
 - **抓取**: 已认证 GraphQL `TweetDetail`(`iFEr5AcP121Og4wx9Yqo3w/TweetDetail`)会话线程;过滤作者本人——回复推文的 `core.user_results.result.core.screen_name` 与主推文作者比对(**legacy 里没有 screen_name**);bounded 分页 ≤3 页
+- **补齐**: GraphQL `full_text` 会把某些回复截断(实测截在序号"❼"处,丢规则正文)——每条自回帖再用 FxTwitter 单推接口取完整文本,取更长者
 - **过滤**: `prompts/comments/filter-replies.md` 只保留「文章正文延续」评论,丢闲聊/广告(推广贴);LLM 判定异常时保守全保留
-- **合并**: 正文尾部 `---` + `**作者在评论区的补充**` + 每条评论 `> blockquote`;评论媒体 [IMG:N]/[VIDEO:N] 重索引入主媒体数组
+- **合并**: **直接拼进正文**(`\n\n` 分隔,无标题无引用标记)——读起来像一篇连续文章;评论媒体 [IMG:N]/[VIDEO:N] 重索引入主媒体数组
 - **降级**: 无 X_AUTH_TOKEN / LLM 不可用 / 抓取失败 → 跳过,绝不阻塞归档
 - **接入点**: `fetchTweet()` FxTwitter 成功路径返回前调 `maybeMergeAuthorComments()`(fetcher.ts)
 - **坑**: LLM 会把过滤条目标记返回成 `"[1]"` 字符串而非数字 `1`——`toIndex` 剥 `[]` 再解析,否则过滤会清空全部
