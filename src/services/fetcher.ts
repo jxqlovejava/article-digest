@@ -12,6 +12,7 @@ import {
   type PhotoSink,
 } from './htmlToMarkdown';
 import { convertHtmlWithMarkitdown } from './markitdownBridge';
+import { isLlmEnabled, chatWithJson } from './llm';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -222,9 +223,17 @@ async function fetchArticleViaGraphQL(tweetId: string): Promise<{ title: string;
       cover_media: articleResult.cover_media,
       media_entities: articleResult.media_entities || [],
     });
+    // entityMap keys from GraphQL are strings; parseDraftJsBlocks expects number keys
+    // to match entityRanges[].key. Inconsistent key types cause formatting to silently
+    // fail (links, bold, etc. get dropped).
+    const gqlEntityMap = new Map<number, any>();
+    for (const e of (contentState.entityMap || [])) {
+      const k = parseInt(String(e.key), 10);
+      if (!isNaN(k)) gqlEntityMap.set(k, e.value);
+    }
     parsed.text = parseDraftJsBlocks(
       contentState.blocks || [],
-      new Map((contentState.entityMap || []).map((e: any) => [e.key, e.value]))
+      gqlEntityMap
     );
     // Fallback to preview text when full article body is not exposed.
     if (!parsed.text?.trim() && articleResult.preview_text) {
@@ -282,11 +291,10 @@ async function expandQuoteOrRetweet(tweet: any, depth = 0): Promise<any> {
     // 1) Try GraphQL first (fast, no browser overhead)
     const graphQlResult = await fetchArticleViaGraphQL(linkCard.id);
     const gqlText = graphQlResult?.text?.trim() || '';
+    const gqlTextIsLong = gqlText.length > 100;
 
-    // Check if GraphQL returned full content with links (markdown link syntax).
-    // preview_text has no links; content_state blocks produce markdown links.
-    const hasLinks = /\[.+\]\(https?:\/\/.+\)/.test(gqlText);
-    if (gqlText && hasLinks) {
+    if (gqlTextIsLong) {
+      // GraphQL returned full content (content_state blocks with body text)
       return {
         title: graphQlResult!.title,
         text: gqlText,
@@ -295,21 +303,26 @@ async function expandQuoteOrRetweet(tweet: any, depth = 0): Promise<any> {
       };
     }
 
-    // 2) GraphQL returned preview_text only (no links) — try Playwright for full body
+    // 2) GraphQL returned only preview_text (short) — try Playwright for full body.
+    // Prefer whichever source has longer text.
+    let pwText = '';
+    let pwTitle = '';
     if (linkCard.url) {
       const pwResult = await fetchArticleViaPlaywright(linkCard.url);
-      if (pwResult?.text?.trim()) {
-        // Prefer GraphQL metadata (author, stats) when available
-        return {
-          title: pwResult.title || graphQlResult?.title || '',
-          text: pwResult.text,
-          photos: pwResult.photos,
-          videos: pwResult.videos,
-        };
-      }
+      pwText = pwResult?.text?.trim() || '';
+      pwTitle = pwResult?.title || '';
     }
 
-    // 3) Fall back to GraphQL preview_text (better than nothing)
+    if (pwText && pwText.length > gqlText.length) {
+      return {
+        title: pwTitle || graphQlResult?.title || '',
+        text: pwText,
+        photos: [],
+        videos: [],
+      };
+    }
+
+    // 3) Fall back to GraphQL text (preview_text > nothing)
     if (gqlText) {
       return {
         title: graphQlResult!.title,
@@ -341,7 +354,8 @@ async function expandQuoteOrRetweet(tweet: any, depth = 0): Promise<any> {
     }
 
     // Still empty? It may be a link-card / X Article whose body FxTwitter does not expose.
-    if (!q.text?.trim() && q.raw_text?.text?.includes('t.co')) {
+    // Check both t.co (link-card) and article presence (X Article without t.co).
+    if (!q.text?.trim() && (q.raw_text?.text?.includes('t.co') || q.article)) {
       const resolved = await resolveLinkCard(q);
       if (resolved) {
         q = {
@@ -466,6 +480,23 @@ async function expandQuoteOrRetweet(tweet: any, depth = 0): Promise<any> {
 }
 
 /** Fetch recent X bookmarks using auth_token. Returns list of tweet URLs. */
+/** 代理被批量下载挤占时网络抖动是常态:GET 请求重试 2 次(共 3 次尝试),退避 1.5s/3s */
+async function axiosGetWithRetry(url: string, config: Parameters<typeof axios.get>[1], tag: string) {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      return await axios.get(url, config);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < 3) {
+        console.warn(`[${tag}] attempt ${attempt}/3 failed, retrying: ${err instanceof Error ? err.message : err}`);
+        await new Promise(r => setTimeout(r, 1500 * attempt));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 export async function fetchBookmarks(count = 30): Promise<string[]> {
   const authToken = process.env.X_AUTH_TOKEN;
   const ct0 = process.env.X_CT0;
@@ -473,7 +504,7 @@ export async function fetchBookmarks(count = 30): Promise<string[]> {
 
   try {
     const vars = JSON.stringify({ count, includePromotedContent: false });
-    const res = await axios.get(
+    const res = await axiosGetWithRetry(
       `https://x.com/i/api/graphql/pLtjrO4ubNh996M_Cubwsg/Bookmarks`,
       {
         params: { variables: vars, features: JSON.stringify({}) },
@@ -486,7 +517,8 @@ export async function fetchBookmarks(count = 30): Promise<string[]> {
         },
         timeout: 15000,
         httpsAgent: getAgent(),
-      }
+      },
+      'fetchBookmarks'
     );
 
     const urls: string[] = [];
@@ -523,7 +555,7 @@ export async function fetchLikes(count = 30): Promise<string[]> {
 
   try {
     const vars = JSON.stringify({ userId, count, includePromotedContent: false });
-    const res = await axios.get(
+    const res = await axiosGetWithRetry(
       `https://x.com/i/api/graphql/TGEKkJG_meudeaFcqaxM-Q/Likes`,
       {
         params: { variables: vars, features: JSON.stringify({}) },
@@ -533,7 +565,8 @@ export async function fetchLikes(count = 30): Promise<string[]> {
           'x-csrf-token': ct0, 'Cookie': `auth_token=${authToken}; ct0=${ct0}`,
         },
         timeout: 15000, httpsAgent: getAgent(),
-      }
+      },
+      'fetchLikes'
     );
 
     const urls: string[] = [];
@@ -993,6 +1026,38 @@ function parseDraftJsBlocks(blocks: Array<{ text: string; type: string; depth?: 
   return result.trim();
 }
 
+/** Strip X Article metadata / UI boilerplate from the end of parsed article text.
+ *  X Articles embed platform UI elements (view counts, timestamps, reply settings,
+ *  "Want to publish your own Article?" calls-to-action) as unstyled Draft.js blocks,
+ *  which leak into the rendered content. This function removes them from the trail. */
+function cleanXArticleBoilerplate(text: string): string {
+  const boilerplatePatterns = [
+    /^Want to publish your own Article\?$/,
+    /^Only some accounts can reply\.$/,
+    /^·\s*[\d,]+\.?\d*[KMB]?\s*Views$/,
+    /^·\s*[\d,]+\.?\d*[KMB]?\s*(?:Views|Likes|Reposts|Comments)$/,
+    /^\d{1,2}:\d{2}\s*[AP]M\s*·\s*[A-Z][a-z]+\s+\d{1,2},?\s*\d{4}$/,
+    /^Reply$/,
+    /^Sort by$/i,
+    /^Most relevant/i,
+    /^Latest/i,
+  ];
+  const lines = text.split('\n');
+  let endIdx = lines.length;
+  while (endIdx > 0) {
+    const trimmed = lines[endIdx - 1].trim();
+    if (!trimmed || boilerplatePatterns.some(p => p.test(trimmed))) {
+      endIdx--;
+    } else {
+      break;
+    }
+  }
+  if (endIdx < lines.length) {
+    return lines.slice(0, endIdx).join('\n').trim();
+  }
+  return text;
+}
+
 function parseArticleContent(article: any): { title: string; text: string; photos: TweetPhoto[]; videos: TweetVideo[] } {
   const title = article.title || '';
   let text = '';
@@ -1009,6 +1074,7 @@ function parseArticleContent(article: any): { title: string; text: string; photo
 
   if (article.content?.blocks) {
     text = parseDraftJsBlocks(article.content.blocks, entityMap);
+    text = cleanXArticleBoilerplate(text);
   }
 
   // Map media_entities to photos/videos
@@ -1071,42 +1137,55 @@ async function fetchFromFxTwitter(parsed: ParsedTweetUrl): Promise<FetchedTweet>
 
   const tweet = response.data.tweet;
 
-  // Handle Twitter Article (is_note_tweet) — content is in article field
+  // Handle Twitter Article — content is in article field.
+  // X Article 发布推文的 text 常只是预览（preview_text，几十到一百多字符），
+  // 完整正文在 article 里。只要 article 解析出的正文更长（信息更完整），
+  // 就采用 article 正文；否则保留原 text（普通推文或 GraphQL 空 content_state）。
   let text = tweet.text;
   let title = '';
   let articlePhotos: TweetPhoto[] = [];
   let articleVideos: TweetVideo[] = [];
-  if ((!text || text.trim().length <= 30) && tweet.article) {
+  if (tweet.article) {
     const articleData = parseArticleContent(tweet.article);
-    text = articleData.text || tweet.text;
-    title = articleData.title;
-    articlePhotos = articleData.photos;
-    articleVideos = articleData.videos;
+    const articleText = articleData.text || '';
+    if (articleText && articleText.trim().length > (text || '').trim().length) {
+      text = articleText;
+      title = articleData.title;
+      articlePhotos = articleData.photos;
+      articleVideos = articleData.videos;
+    }
   }
 
-  // Link-card tweet: FxTwitter may return only a t.co URL; use GraphQL auth endpoint
-  // to fetch the X Article preview/body when available.
-  if ((!text || text.trim().length <= 30) && tweet.raw_text?.text?.includes('t.co')) {
+  // Link-card tweet OR X Article with incomplete FxTwitter content:
+  // use GraphQL auth endpoint to fetch full body.
+  // X Articles don't carry a t.co URL in raw_text, so we can't rely on
+  // that signal alone — also trigger when tweet.article existed but
+  // the parsed content is still short.
+  const textIsShort = !text || text.trim().length <= 30;
+  const hasTcoUrl = tweet.raw_text?.text?.includes('t.co');
+  const articleHadNoContent = textIsShort && !!tweet.article;  // article field present but content empty
+  if (textIsShort && (hasTcoUrl || articleHadNoContent)) {
     const gqlArticle = await fetchArticleViaGraphQL(tweet.id);
     const gqlText = gqlArticle?.text?.trim() || '';
-    const hasLinks = /\[.+\]\(https?:\/\/.+\)/.test(gqlText);
+    const gqlTextIsLong = gqlText.length > 100;
 
-    if (gqlText && hasLinks) {
-      // GraphQL returned full content_state with inline links
+    if (gqlTextIsLong) {
+      // GraphQL returned full content (blocks with meaningful body length)
       text = gqlText;
       title = gqlArticle!.title || title;
       articlePhotos = gqlArticle!.photos || [];
       articleVideos = gqlArticle!.videos || [];
-    } else {
-      // GraphQL returned only preview_text (no links) — try Playwright
+    } else if (gqlText) {
+      // GraphQL returned only preview_text — try Playwright for full body.
+      // Keep GraphQL result as fallback: prefer the longer source.
       const pwResult = await fetchArticleViaPlaywright(tweet.url);
-      if (pwResult?.text?.trim()) {
-        text = pwResult.text;
-        title = pwResult.title || gqlArticle?.title || title;
-        articlePhotos = pwResult.photos;
-        articleVideos = pwResult.videos;
+      const pwText = pwResult?.text?.trim() || '';
+      if (pwText && pwText.length > gqlText.length) {
+        text = pwText;
+        title = pwResult?.title || gqlArticle?.title || title;
+        articlePhotos = pwResult?.photos || [];
+        articleVideos = pwResult?.videos || [];
       } else if (gqlText) {
-        // Fall back to preview_text
         text = gqlText;
         title = gqlArticle!.title || title;
         articlePhotos = gqlArticle!.photos || [];
@@ -1120,6 +1199,16 @@ async function fetchFromFxTwitter(parsed: ParsedTweetUrl): Promise<FetchedTweet>
   }
   if (!title) {
     title = deriveTitle(text, 80) || `${tweet.author.name} 的推文`;
+  }
+
+  // Diagnostic: warn when the final text is still suspiciously short after all fallbacks.
+  // This helps identify cases where the fetch pipeline didn't find full article content.
+  if (text && text.trim().length > 0 && text.trim().length < 100) {
+    console.warn(
+      `[fx-tw] tweet ${tweet.id} final text only ${text.trim().length} chars — ` +
+      `article=${!!tweet.article} raw_tco=${tweet.raw_text?.text?.includes('t.co')} ` +
+      `title="${title?.substring(0, 40)}" author=${tweet.author?.screen_name}`
+    );
   }
 
   // Merge article photos/videos with tweet media
@@ -1214,6 +1303,274 @@ async function fetchFromOembed(parsed: ParsedTweetUrl): Promise<FetchedTweet> {
   };
 }
 
+interface AuthorReply {
+  id: string;
+  text: string;
+  createdAt: string;
+  photos: TweetPhoto[];
+  videos: TweetVideo[];
+}
+
+const COMMENT_PROMPT_DIR = path.join(process.cwd(), 'prompts', 'comments');
+const commentPromptCache = new Map<string, string>();
+function loadCommentPrompt(name: string): string {
+  if (!commentPromptCache.has(name)) {
+    commentPromptCache.set(name, fs.readFileSync(path.join(COMMENT_PROMPT_DIR, name), 'utf-8'));
+  }
+  return commentPromptCache.get(name)!;
+}
+
+/** AI 判断推文正文是否「明显未完结」——作者把内容放评论区,正文只是引子/预告。 */
+async function judgeBodyIncomplete(body: string): Promise<boolean> {
+  const prompt = loadCommentPrompt('detect-incomplete.md');
+  const res = await chatWithJson<{ incomplete: boolean; reason?: string }>(
+    [{ role: 'system', content: prompt.replace('<BODY>', body) }],
+    { temperature: 0.1, maxTokens: 300 }
+  );
+  return !!res?.incomplete;
+}
+
+/** 提取回复推文里的媒体(FxTwitter full_text 的 extended_entities) */
+function extractReplyMedia(legacy: any): { photos: TweetPhoto[]; videos: TweetVideo[] } {
+  const photos: TweetPhoto[] = [];
+  const videos: TweetVideo[] = [];
+  const mediaArr = legacy?.extended_entities?.media || legacy?.entities?.media || [];
+  for (const m of mediaArr) {
+    if (m?.type === 'photo' && m.media_url_https) {
+      photos.push({
+        url: upgradeImageUrl(m.media_url_https),
+        width: m.original_info?.width || 0,
+        height: m.original_info?.height || 0,
+      });
+    } else if (m?.type === 'video' || m?.type === 'animated_gif') {
+      const variants = m?.video_info?.variants || [];
+      const mp4 = variants.filter((v: any) => v?.content_type === 'video/mp4' && v.url);
+      const best = mp4.length
+        ? mp4.reduce((a: any, b: any) => (b.bitrate || 0) > (a.bitrate || 0) ? b : a, mp4[0])
+        : variants.find((v: any) => v.url);
+      if (best?.url) {
+        videos.push({
+          url: best.url,
+          thumbnail_url: m.media_url_https || '',
+          width: m.original_info?.width || 0,
+          height: m.original_info?.height || 0,
+        });
+      }
+    }
+  }
+  return { photos, videos };
+}
+
+/** 递归收集会话模块 items 里的作者自回帖(过滤:作者本人、非焦点推文、去重、长度≥15 去闲聊)。 */
+function collectAuthorRepliesFromItems(
+  items: any[], focalTweetId: string, authorScreenName: string, seen: Set<string>
+): AuthorReply[] {
+  const out: AuthorReply[] = [];
+  const walk = (arr: any[]) => {
+    for (const it of arr) {
+      const ic = it?.item?.itemContent || it?.itemContent;
+      const result = ic?.tweet_results?.result;
+      if (result) {
+        const t = result.tweet || result;
+        const legacy = t?.legacy;
+        if (legacy) {
+          const id = t.rest_id || legacy.id_str;
+          const screenName = t?.core?.user_results?.result?.core?.screen_name || '';
+          if (
+            id && id !== focalTweetId &&
+            screenName && screenName.toLowerCase() === authorScreenName.toLowerCase() &&
+            !seen.has(id)
+          ) {
+            const text = (legacy.full_text || legacy.text || '').trim();
+            if (text.length >= 15) {  // 过滤"收到"/纯 emoji 等闲聊
+              seen.add(id);
+              const { photos, videos } = extractReplyMedia(legacy);
+              out.push({ id, text, createdAt: legacy.created_at || '', photos, videos });
+            }
+          }
+        }
+      }
+      // 嵌套续聊(评论的评论)
+      if (it?.item?.items) walk(it.item.items);
+      if (it?.item?.itemContent?.items) walk(it.item.itemContent.items);
+      if (it?.items) walk(it.items);
+    }
+  };
+  walk(items);
+  return out;
+}
+
+/** 走已认证 GraphQL TweetDetail 端点抓取作者在评论区的自回帖。bounded 分页(≤3 页,无 bottom cursor 即停)。 */
+async function fetchAuthorSelfReplies(tweetId: string, authorScreenName: string): Promise<AuthorReply[]> {
+  const authToken = process.env.X_AUTH_TOKEN;
+  const ct0 = process.env.X_CT0;
+  if (!authToken) return [];
+  const headers: Record<string, string> = {
+    'User-Agent': 'TweetArchive/1.0',
+    'authorization': `Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA`,
+    'x-twitter-active-user': 'yes',
+    'x-twitter-client-language': 'en',
+    'cookie': `auth_token=${authToken}; ct0=${ct0 || ''};`,
+    'x-csrf-token': ct0 || '',
+  };
+
+  const replies: AuthorReply[] = [];
+  const seen = new Set<string>();
+  let cursor: string | undefined;
+  const MAX_PAGES = 3;
+
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const variables: Record<string, unknown> = {
+      focalTweetId: tweetId,
+      with_rux_injections: false,
+      includePromotedContent: false,
+      withCommunity: true,
+      withQuickPromoteEligibilityTweetFields: false,
+      withArticleRichContent: true,
+      withBirdwatchNotes: false,
+      withVoice: true,
+      withDownvotePerspective: false,
+      withReactionsMetadata: false,
+      withReactionsPerspective: false,
+    };
+    if (cursor) variables.cursor = cursor;
+
+    let data: any;
+    try {
+      const res = await axiosGetWithRetry(
+        `https://x.com/i/api/graphql/iFEr5AcP121Og4wx9Yqo3w/TweetDetail`,
+        {
+          params: {
+            variables: JSON.stringify(variables),
+            features: JSON.stringify(DEFAULT_FEATURES),
+          },
+          headers,
+          timeout: 15000,
+          httpsAgent: getAgent(),
+        },
+        'fetchAuthorReplies'
+      );
+      data = res.data?.data?.threaded_conversation_with_injections_v2;
+    } catch (err) {
+      console.warn(`[comments] TweetDetail page ${page} failed: ${err instanceof Error ? err.message : err}`);
+      break;
+    }
+    if (!data) break;
+
+    let nextCursor: string | undefined;
+    const instructions = data.instructions || [];
+    for (const inst of instructions) {
+      const entries = inst.entries || inst.moduleItems || [];
+      for (const entry of entries) {
+        const content = entry.content || {};
+        if (content.entryType === 'TimelineTimelineModule' && Array.isArray(content.items)) {
+          replies.push(...collectAuthorRepliesFromItems(content.items, tweetId, authorScreenName, seen));
+        } else if (entry.entryId?.includes('cursor-bottom')) {
+          const c = content.operation?.cursor;
+          if (c?.value) nextCursor = c.value;
+        }
+      }
+    }
+    if (!nextCursor || nextCursor === cursor) break;  // 无更多页
+    cursor = nextCursor;
+  }
+
+  // 阅读顺序:时间升序
+  replies.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  return replies;
+}
+
+/** LLM 过滤:只保留「文章正文延续」的评论,丢弃闲聊/广告(如推广贴)。判断失败时保守全保留。 */
+async function filterArticleReplies(replies: AuthorReply[]): Promise<AuthorReply[]> {
+  if (replies.length <= 1) return replies;
+  try {
+    const prompt = loadCommentPrompt('filter-replies.md');
+    const labeled = replies.map((r, i) => `[${i + 1}] ${r.text}`).join('\n\n');
+    const res = await chatWithJson<{ keep?: number[]; drop?: number[] }>(
+      [{ role: 'system', content: prompt.replace('<REPLIES>', labeled) }],
+      { temperature: 0.1, maxTokens: 500 }
+    );
+    // LLM 可能返回数字(1)或标签字符串("[1]")——统一解析为 0-based 索引
+    const toIndex = (v: unknown): number | null => {
+      const n = typeof v === 'number' ? v : parseInt(String(v).replace(/[^\d-]/g, ''), 10);
+      return Number.isFinite(n) ? n - 1 : null;
+    };
+    const keepSet = new Set(
+      (res?.keep || []).map(toIndex).filter((n): n is number => n !== null && n >= 0)
+    );
+    if (keepSet.size === 0) return replies;  // 判定异常,保守保留全部
+    return replies.filter((_, i) => keepSet.has(i));
+  } catch (err) {
+    console.warn(`[comments] 评论过滤失败,保守保留全部: ${err instanceof Error ? err.message : err}`);
+    return replies;
+  }
+}
+
+/** 把作者自回帖合并进正文:blockquote 区块 + 评论媒体重索引。镜像 mergeEmbeddedArticle 的媒体处理。 */
+function mergeAuthorReplies(tweet: FetchedTweet, replies: AuthorReply[]): FetchedTweet {
+  const mergedPhotos: TweetPhoto[] = [...(tweet.media?.photos || [])];
+  const mergedVideos: TweetVideo[] = [...(tweet.media?.videos || [])];
+  const parts: string[] = [];
+  for (const r of replies) {
+    let rt = r.text;
+    // 去掉结尾的 t.co 媒体链接(避免图片/视频 URL 原文重复)
+    rt = rt.replace(/https?:\/\/t\.co\/\w+$/g, '').trim();
+    if (!rt) continue;
+    for (const p of r.photos) {
+      const newIdx = mergedPhotos.length;
+      mergedPhotos.push(p);
+      rt += `\n[IMG:${newIdx}]`;
+    }
+    for (const v of r.videos) {
+      const newIdx = mergedVideos.length;
+      mergedVideos.push(v);
+      rt += `\n[VIDEO:${newIdx}]`;
+    }
+    parts.push(rt.split('\n').map(l => `> ${l}`).join('\n'));
+  }
+  if (parts.length === 0) return tweet;
+  return {
+    ...tweet,
+    text: `${tweet.text}\n\n---\n\n**作者在评论区的补充**\n\n${parts.join('\n\n')}`,
+    media: mergedPhotos.length || mergedVideos.length
+      ? { photos: mergedPhotos, videos: mergedVideos }
+      : tweet.media,
+  };
+}
+
+/** 作者评论区内容合并入口:正文明显未完结时抓作者自回帖并入正文。任一步失败降级返回原推文,绝不阻塞归档。 */
+export async function maybeMergeAuthorComments(tweet: FetchedTweet): Promise<FetchedTweet> {
+  if (!process.env.X_AUTH_TOKEN || !isLlmEnabled()) return tweet;
+  const body = (tweet.text || '').trim();
+  if (!body) return tweet;
+  if (!tweet.author?.screen_name) return tweet;
+  try {
+    const incomplete = await judgeBodyIncomplete(body);
+    if (!incomplete) {
+      console.log(`[comments] 完整性判断:正文已完结,跳过评论合并 tweet ${tweet.id}`);
+      return tweet;
+    }
+    console.log(`[comments] 完整性判断:正文未完结,抓取作者评论 tweet ${tweet.id}`);
+  } catch (err) {
+    console.warn(`[comments] 完整性判断失败,跳过: ${err instanceof Error ? err.message : err}`);
+    return tweet;
+  }
+  try {
+    let replies = await fetchAuthorSelfReplies(tweet.id, tweet.author.screen_name);
+    console.log(`[comments] 抓取到 ${replies.length} 条作者评论 tweet ${tweet.id}`);
+    if (replies.length === 0) return tweet;
+    const before = replies.length;
+    replies = await filterArticleReplies(replies);
+    console.log(`[comments] 过滤 ${before} → ${replies.length} 条 tweet ${tweet.id}`);
+    if (replies.length === 0) return tweet;
+    console.log(`[comments] 合并 ${replies.length} 条作者评论(过滤前 ${before}) → tweet ${tweet.id}`);
+    return mergeAuthorReplies(tweet, replies);
+  } catch (err) {
+    console.warn(`[comments] 抓取作者评论失败,保留原文: ${err instanceof Error ? err.message : err}`);
+    return tweet;
+  }
+}
+
 export async function fetchTweet(parsed: ParsedTweetUrl): Promise<FetchedTweet> {
   const errors: string[] = [];
   let fxStats: Partial<FetchedTweet> | null = null;
@@ -1221,7 +1578,7 @@ export async function fetchTweet(parsed: ParsedTweetUrl): Promise<FetchedTweet> 
   try {
     const tweet = await fetchFromFxTwitter(parsed);
     if (tweet.text && tweet.text.trim().length > 10) {
-      return tweet;
+      return await maybeMergeAuthorComments(tweet);
     }
     fxStats = {
       likes: tweet.likes,
@@ -1540,6 +1897,11 @@ export async function fetchWechatArticle(url: string): Promise<FetchedTweet> {
   // Strip letter-spacing inline (safe — values are plain numbers/units)
   contentHtml = contentHtml.replace(
     /\s*letter-spacing\s*:\s*[^;'"]+[;'"]?/gi,
+    ''
+  );
+  // Strip inline background-color / background / color (overrides both light/dark theme)
+  contentHtml = contentHtml.replace(
+    /\s*(?:background(?:-color)?|color)\s*:\s*[^;'"]+[;'"]?/gi,
     ''
   );
   // Strip fixed widths from table/td/th elements (WeChat uses px widths)

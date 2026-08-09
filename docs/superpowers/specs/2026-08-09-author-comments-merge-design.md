@@ -28,10 +28,12 @@ fetchTweet()
             │    prompts/comments/detect-incomplete.md（提示词即代码）
             ├─ ③ 未完结 → fetchAuthorSelfReplies() 抓作者自回帖
             │    走已认证 GraphQL TweetDetail 端点（fetcher 已在用）
-            │    过滤：screen_name==作者 且 in_reply_to_screen_name==作者
-            │    分页：bounded（最多 3 页，某页无新自回帖即停）
-            ├─ ④ 合并：正文尾部追加 + 评论媒体 [IMG:N]/[VIDEO:N] 重索引
-            └─ ⑤ 任一失败 → 原样返回，绝不阻塞归档
+            │    过滤：作者本人（screen_name 比对）+ 文本长度 ≥ 15
+            │    分页：bounded（最多 3 页，无 bottom cursor 即停）
+            ├─ ④ LLM 过滤：只保留「文章正文延续」评论,丢闲聊/广告
+            │    prompts/comments/filter-replies.md
+            ├─ ⑤ 合并：正文尾部追加 + 评论媒体 [IMG:N]/[VIDEO:N] 重索引
+            └─ ⑥ 任一失败 → 原样返回，绝不阻塞归档
 ```
 
 ## 组件
@@ -67,7 +69,16 @@ LLM 完整性判断提示词。输入主推文正文，输出结构化结论：�
 
 ### 3. 媒体合并（修改）
 
-评论中的 `[IMG:N]`/`[VIDEO:N]` 需要重索引到合并后的主媒体数组。现有 `renderer.mergeEmbeddedArticle` 已有此逻辑（`renderer.ts:3064`），把它**抽成共享函数**或镜像其逻辑到 fetcher，供评论合并复用（新增图片去重追加 + 重索引）。
+评论中的 `[IMG:N]`/`[VIDEO:N]` 需要重索引到合并后的主媒体数组。现有 `renderer.mergeEmbeddedArticle` 已有此逻辑（`renderer.ts:3064`），镜像其逻辑到 fetcher 的 `mergeAuthorReplies`，供评论合并复用（新增图片去重追加 + 重索引）。
+
+### 3b. 评论内容过滤（实现中新增）
+
+作者自回帖里可能混入推广/闲聊（如 `我正在写一本《搞钱秘籍》…私聊我`）。新增第二个 LLM pass：
+
+- `prompts/comments/filter-replies.md` — 把每条评论标注为「文章正文延续」vs「闲聊/广告」，输出 `keep/drop` 条目标记
+- 硬过滤在前：文本长度 < 15 的直接丢弃（`收到`/纯 emoji）
+- LLM 判定异常时**保守全保留**（宁可多保留正文不丢内容）
+- 坑：LLM 会把条目标记返回成字符串 `"[1]"` 而非数字 `1`——`toIndex` 统一剥掉 `[]` 再解析，否则过滤会清空全部（已在 `2026-08-09` 踩坑）
 
 ### 4. `fetchTweet()` 接入（修改）
 

@@ -15,9 +15,43 @@ X/Twitter 推文收藏归档服务。通过 FxTwitter API + Jina AI 抓取推文
 
 ```
 用户 → nginx(:3000, tweet-nginx) → tweet-app(:3000)
+                                     └→ 视频/图片: 下载→上传腾讯云 COS→删本地, HTML 写 COS URL
 ```
 
 docker-compose 管理双容器：nginx（反向代理 + gzip）→ app（Express）。同一网络，nginx 重启 < 1s，app 重启 < 3s。
+
+### 腾讯云 COS（视频/图床）
+
+- **桶**: `articlevideo-1316871392`，地域 `ap-shanghai`（与 CVM 同地域，上传走内网免费）
+- **权限**: 公有读私有写；对象标签 `type=video` / `type=image`
+- **封装**: `src/services/cos.ts`（`isCosEnabled()` 未配置时整体降级本地存储）
+- **环境变量**（服务器 `.env`，不进 git）: `COS_SECRET_ID/COS_SECRET_KEY/COS_BUCKET/COS_REGION/COS_BASE_URL/COS_TAG_VIDEO/COS_TAG_IMAGE`
+- **保存流程**: 下载到本地 → `tryUploadMediaToCos()` 上传并删本地 → `localImagePaths/localVideoPaths` 写 COS URL；上传失败回退本地相对路径
+- **历史迁移**: `docker exec <app容器> npm run migrate:cos`（可重跑，已存在跳过；不删本地文件，验证后手动 `rm -rf data/videos/* data/images/*`）
+- **视频修复**: `docker exec <app容器> npm run repair:videos`（修复下载失败回退成 video.twimg.com 的文章；下载支持 60s 无活动超时 + Range 断点续传 5 轮重试）
+- **视频清晰度**: FxTwitter 的 url 已是最高码率 MP4 档；更高质量只在 HLS(m3u8) 里，需 ffmpeg，未实现
+- **注意**: `package.json` 新增依赖后必须重建 `tweet-base`（`docker build -f Dockerfile.base -t tweet-base:latest .`，apt/pip 层有缓存只跑 npm install）；COS ACL 修改生效有几秒延迟
+
+### 自动翻译（非中文 → 中文）
+
+- **检测**: `translate.ts isNonChinese()` 泛语种——假名(日)/谚文(韩)/拉丁字母主导且汉字 <20% 即非中文（`nonHan < 6` 不翻，防短行误判；短段落也会翻，别再调高阈值）
+- **多遍流水线**（学 baoyu-translate refined 模式）: 初翻(draft)→评审(critique,只诊断)→精修(revise)；评审输出「无问题」则跳过硬修；任一步失败回退上一稿/原文。Prompt 在 `prompts/translate/*.md`（提示词即代码，改完重跑生效）
+- **术语表**: `data/glossary.json`——命中注入（只注入本文出现的条目），**手编不会被覆盖**；改术语后重跑单篇 `ONLY=<file> npm run translate:foreign`
+- **新文章**: `saveTweet` 渲染前 `translateMarkdown()`，原文备份 `data/articles/<base>.orig.md`
+- **存量**: `docker exec <app容器> npm run translate:foreign`（HTML block 层翻译，`.bak-trans` 备份，meta/FTS 同步，可断点重跑，3 并发）
+- **陷阱**: 输入无编号时 LLM 会自发给输出加【1】标记——`stripMarker` 统一剥除，改动翻译输出格式时注意回归
+- **部署**: `prompts/` 目录必须随 `src/ scripts/ public/` 一起 scp（Dockerfile 已 COPY）
+
+### 作者评论区内容合并（正文未完结 → 合并作者自回帖）
+
+- **触发**: 主推文正文「明显未完结」(引子/预告/列 N 条只写部分)时,自动抓作者在评论区的自回帖并入正文,合成一篇
+- **判断**: LLM 读正文判完整性,`prompts/comments/detect-incomplete.md`;只有未完结才抓(省掉每篇都抓评论的延迟);完结推文直接跳过
+- **抓取**: 已认证 GraphQL `TweetDetail`(`iFEr5AcP121Og4wx9Yqo3w/TweetDetail`)会话线程;过滤作者本人——回复推文的 `core.user_results.result.core.screen_name` 与主推文作者比对(**legacy 里没有 screen_name**);bounded 分页 ≤3 页
+- **过滤**: `prompts/comments/filter-replies.md` 只保留「文章正文延续」评论,丢闲聊/广告(推广贴);LLM 判定异常时保守全保留
+- **合并**: 正文尾部 `---` + `**作者在评论区的补充**` + 每条评论 `> blockquote`;评论媒体 [IMG:N]/[VIDEO:N] 重索引入主媒体数组
+- **降级**: 无 X_AUTH_TOKEN / LLM 不可用 / 抓取失败 → 跳过,绝不阻塞归档
+- **接入点**: `fetchTweet()` FxTwitter 成功路径返回前调 `maybeMergeAuthorComments()`(fetcher.ts)
+- **坑**: LLM 会把过滤条目标记返回成 `"[1]"` 字符串而非数字 `1`——`toIndex` 剥 `[]` 再解析,否则过滤会清空全部
 
 ### 更新流程
 
@@ -68,7 +102,7 @@ ssh -i ~/Documents/hermes.pem ubuntu@124.220.236.129 \
 ### 1. 推文抓取
 
 - **FxTwitter 优先**：主路径，`tweet.text.trim().length > 10` 视为有效
-- **Twitter Article**：`tweet.text` 为空/很短且 `tweet.article` 存在时，解析 Draft.js blocks + entityMap
+- **Twitter Article**：`tweet.article` 存在时总是解析 Draft.js blocks + entityMap，**文章正文比 `tweet.text` 长则采用正文**。X Article 发布推文的 `tweet.text` 常是 100+ 字符预览（`raw_text` 末尾带指向 `x.com/i/article/...` 的 t.co），不可用 `text.trim().length <= 30` 当判断门槛——会丢掉完整正文（历史 bug：OtherSideBJ_2085175270185848897 只存了预览）
 - **Jina AI 降级**：FxTwitter 失败后使用（国内不通，仅作后备）
 - **oEmbed 兜底**：最后手段
 - **全部失败**：返回明确错误信息
@@ -146,6 +180,8 @@ ssh -i ~/Documents/hermes.pem ubuntu@124.220.236.129 \
 ### 7. 已知陷阱
 
 **部署相关：**
+- **手动 `docker restart` app 容器后必须 `docker kill -s HUP tweet-nginx`**：nginx 只在启动/HUP 时解析 upstream 主机名并缓存 IP，app 容器重建/重启换 IP 后全站 502（deploy.sh 已内置 HUP，手动 restart 没有）
+- **磁盘告警先清 docker**：`docker image prune -f` + `docker rmi tweet-disgest_app:<非活跃色>`。蓝绿双镜像 + base 重建会累积（32 个镜像曾占 11G）
 - **rsync 不可靠，必须用 scp**：rsync 多次报告成功但文件未同步到服务器。现在统一 `scp -i ~/Documents/hermes.pem -r`
 - **部署后必须验证服务器源文件**：scp 后 `grep <关键改动> /home/ubuntu/tweet-disgest/src/...` 确认，再执行 deploy.sh
 - **docker-compose 1.29.2 有 ContainerConfig bug**：不能用来启停容器。构建用 `docker build`，容器管理用 `docker run/rm`，nginx 用 `kill -s HUP` 热重载
@@ -170,6 +206,16 @@ ssh -i ~/Documents/hermes.pem ubuntu@124.220.236.129 \
 ---
 
 ## 工作规范（防止反复修改）
+
+### 自动部署守则
+
+改完 Bug 或完成一个功能后：
+1. **自动验证** — `npm run build` 通过 → 服务器 `grep` 确认改动 → `curl` 确认 HTTP 200
+2. **验证通过后自动部署** — 不询问，直接走 scp + deploy.sh 流程
+3. **旧文章迁移** — 如果改了 `renderTweetHtml()` 或其他影响存量 HTML 的代码，验证时检查旧文章，同步更新后 scp 到服务器
+4. **验证失败** — 停下来修复，不部署
+
+即三步闭环：验证 → 通过 → 部署。不需要逐条确认，除非验证失败。
 
 ### 改前读代码
 
