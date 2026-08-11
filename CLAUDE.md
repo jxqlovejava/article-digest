@@ -234,3 +234,13 @@ ssh -i ~/Documents/hermes.pem ubuntu@124.220.236.129 \
 - [ ] 本地验证通过后再部署
 - [ ] 部署后逐条验证（见上方"验收"流程）
 - [ ] 浏览器 Cmd+Shift+R 强刷新确认
+
+<!-- OPENWIKI:START -->
+
+## OpenWiki
+
+This repository uses OpenWiki for recurring code documentation. Start with `openwiki/quickstart.md`, then follow its links to architecture, workflows, domain concepts, operations, integrations, testing guidance, and source maps.
+
+The scheduled OpenWiki GitHub Actions workflow refreshes the repository wiki. Do not hand-edit generated OpenWiki pages unless explicitly asked; prefer updating source code/docs and letting OpenWiki regenerate.
+
+<!-- OPENWIKI:END -->
