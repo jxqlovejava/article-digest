@@ -1,4 +1,4 @@
-# Tweet Archive
+# Article Digest
 
 自动归档 X/Twitter 推文与网页文章到自托管 HTML 的私人知识库：全文+语义搜索、知识管理、自动翻译，可选腾讯云 COS 媒体存储。
 
