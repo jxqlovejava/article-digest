@@ -4,11 +4,13 @@ import axios from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { marked, Renderer } from 'marked';
 import hljs from 'highlight.js';
-import type { FetchedTweet, TweetPhoto } from './fetcher';
+import type { FetchedTweet, TweetPhoto, TweetVideo } from './fetcher';
 import { deriveTitle } from './fetcher';
 import { insertArticle as insertSearchArticle, deleteArticle as deleteSearchArticle, syncMeta as syncSearchMeta, generateEmbedding } from './search';
 import { extractOpinions } from './opinions';
 import { normalizeScrapedText, normalizeAuthorField } from '../utils/textDecode';
+import { isCosEnabled, uploadToCos, type CosKind } from './cos';
+import { translateMarkdown, isNonChinese } from './translate';
 
 // ---- Marked setup ----
 const markedRenderer = new Renderer();
@@ -159,6 +161,10 @@ function normalizeTweetFields(tweet: FetchedTweet): FetchedTweet {
 }
 
 function convertMarkdownToHtml(text: string): string {
+  // Normalize literal **bold** to <strong> as a safety net (marked should handle these,
+  // but edge cases around CJK text / nested punctuation can slip through).
+  text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
   // Preprocess @mentions and #hashtags into markdown links before marked parsing.
   // Only match when not already inside a markdown link (preceded by '[' or '(').
   let processed = text.replace(/(?<![\w([])@(\w{1,15})\b/g, '[@$1](https://twitter.com/$1)');
@@ -182,14 +188,22 @@ function convertMarkdownToHtml(text: string): string {
       const key = `${username}/status/${tweetId}`;
       const fileName = fileNameByUrl.get(key);
       if (fileName) {
-        return `[🔄 @${username} 的推文](articles/${fileName})`;
+        // 绝对路径:文章页在 /articles/X.html,相对链接 articles/Y.html 会解析成
+        // /articles/articles/Y.html(双重 articles)而 404。必须用 /articles/Y.html。
+        // 不带图标、纯蓝色(见 .article-content a[href^="/articles/"] 样式),像推特原文一样可点。
+        return `[@${username} 的推文](/articles/${fileName})`;
       }
       // Not archived locally — keep as original markdown link with shortened display
-      return `[🔄 @${username}/status/${tweetId}](${match})`;
+      return `[@${username}/status/${tweetId}](${match})`;
     }
   );
 
-  return marked.parse(processed) as string;
+  let html = marked.parse(processed) as string;
+  /** Strip orphaned markdown syntax that survived rendering (e.g. ** 跨 heading/paragraph 边界). */
+  html = html
+    .replace(/<(h[1-6]|p|li|td|th|blockquote)[^>]*>\s*\*\*/g, (m) => m.replace(/\s*\*\*$/, ''))
+    .replace(/\*\*\s*<\/(h[1-6]|p|li|td|th|blockquote)>/g, (m) => m.replace(/^\*\*\s*/, ''));
+  return html;
 }
 
 function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImageUrls: string[], allVideoUrls: string[], localVideoPaths: string[]): string {
@@ -351,8 +365,9 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
     }
     @keyframes skeleton-pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 0.7; } }
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; overscroll-behavior-x: none; }
-    .page-wrapper { overflow-x: hidden; position: relative; min-height: 100vh; }
+    /* pan-x pan-y:允许可横向滚动模块(代码块等)内的浏览器原生横向滑动;页面本身 overflow-x hidden 不会横向移动 */
+    html, body { width: 100%; overflow-x: hidden; overscroll-behavior-x: none; touch-action: pan-x pan-y; }
+    .page-wrapper { overflow-x: hidden; overflow-y: auto; position: relative; min-height: 100vh; touch-action: pan-x pan-y; -webkit-overflow-scrolling: touch; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
       background: var(--bg); color: var(--text); line-height: 1.7;
@@ -376,11 +391,16 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
     .article-meta .author-handle { color: var(--text-tertiary); font-size: 13px; }
     .article-meta .divider { color: var(--border); }
     .article-meta .date { color: var(--text-tertiary); font-size: 13px; }
-    .article-content { font-size: 17px; line-height: 1.7; color: var(--text); word-break: break-word; overflow-wrap: break-word; overflow-x: auto; padding: 0 16px; }
+    .article-content { font-size: 15.5px; line-height: 1.75; color: var(--text); word-break: break-word; overflow-wrap: break-word; overflow-x: auto; padding: 0 20px; }
     .article-content table { max-width: 100%; word-break: break-all; }
+    .article-content img, .article-content video { max-width: 100%; height: auto; }
     .article-content p { margin-bottom: 1.1em; }
     .article-content a { color: var(--accent); text-decoration: none; }
     .article-content a:hover { text-decoration: underline; }
+    /* 内嵌推文引用链接:像推特原文一样,纯蓝色、无下划线,一眼可点 */
+    .article-content a[href^="/articles/"] { color: #1d9bf0; text-decoration: none; }
+    .article-content a[href^="/articles/"]:hover { text-decoration: none; }
+    [data-theme="dark"] .article-content a[href^="/articles/"] { color: #6cb4ee; }
     .article-content strong { font-weight: 700; color: var(--text); }
     .header-img { display: block; width: 100%; height: auto; margin: 0 0 20px; border-radius: 8px; box-shadow: 0 4px 12px var(--shadow-sm); }
     .tweet-inline-img { display: block; width: 100%; height: auto; border-radius: 8px; margin: 20px 0; box-shadow: 0 4px 12px var(--shadow-sm); }
@@ -433,7 +453,7 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
     }
     .article-content pre {
       background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px;
-      overflow-x: auto; margin-bottom: 0.8em; line-height: 1.5;
+      overflow-x: auto; touch-action: pan-x pan-y; margin-bottom: 0.8em; line-height: 1.5;
     }
     .article-content pre code {
       background: none; padding: 0; border-radius: 0; color: inherit; font-size: 0.85em;
@@ -486,19 +506,19 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
 
     @media (min-width: 769px) {
       .article-title { font-size: 30px; }
-      .article-content { font-size: 18px; padding: 0 20px; }
-      .article-content pre { padding: 16px; }
+      .article-content { font-size: 16.5px; padding: 0 32px; }
+      .article-content pre { padding: 16px 20px; }
       .article-content pre code { font-size: 0.875em; }
-      .article-header { padding: 0 20px; }
-      .article-footer { padding: 0 20px; }
+      .article-header { padding: 0 32px; }
+      .article-footer { padding: 0 32px; }
     }
     @media (max-width: 768px) and (min-width: 481px) {
-      .article-content { font-size: 17.5px; }
+      .article-content { font-size: 16px; }
     }
     @media (max-width: 480px) {
-      .article-header { padding: 0 16px; }
-      .article-content { padding: 0 16px; }
-      .article-footer { padding: 0 16px; }
+      .article-header { padding: 0 20px; }
+      .article-content { padding: 0 20px; }
+      .article-footer { padding: 0 20px; }
       .header-img { margin: 0 0 16px; }
       .article-title { font-size: 24px; }
       .article-content pre { padding: 12px; font-size: 0.825em; }
@@ -741,22 +761,113 @@ function renderTweetHtml(tweet: FetchedTweet, localImagePaths: string[], allImag
     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
   </button>
   <div class="img-lightbox-track" id="imgLightboxTrack"></div>
-  <div class="img-lightbox-hint">左右滑动切换 · 下拉关闭</div>
+  <div class="img-lightbox-hint">双指缩放 · 左右滑动切换 · 下拉关闭</div>
 </div>
 <script>
-// Disable pinch-zoom and page-level horizontal swipe, keep vertical scroll
+// Disable pinch-zoom and page-level horizontal swipe, keep vertical scroll.
+// 可横向滚动模块(代码块等)内交给浏览器原生横向滚动;
+// 屏幕左缘横滑返回:页面跟手滑动,松手过阈值丝滑回退,不足则弹回。
 (function() {
-  var lastTouchEnd = 0;
+  var _touchStartX = 0, _touchStartY = 0;
+  var _lastTouchEnd = 0;
+  var _insideHScroll = false;
+  var _edgeBack = false;       // 本次触摸已武装左缘返回
+  var _edgeEngaged = false;    // 已进入跟手返回
+  var _edgeMaxDx = 0;
+  var _EDGE = 60;              // 左缘返回识别区宽度(px)
+  var _wrapper = document.querySelector('.page-wrapper');
+  function isInsideHScroll(el) {
+    while (el && el !== document.body) {
+      // 正文容器本身不算(否则整篇都可能被误判成可横向滚动而失效),只认正文内的横向滚动子模块
+      if (el.classList && el.classList.contains('article-content')) return false;
+      var st = window.getComputedStyle(el);
+      if ((st.overflowX === 'auto' || st.overflowX === 'scroll') && el.scrollWidth > el.clientWidth + 1) return true;
+      el = el.parentElement;
+    }
+    return false;
+  }
+  function setFollow(x) {
+    if (!_wrapper) return;
+    var t = Math.max(0, Math.min(Math.round(x * 0.55), Math.round(window.innerWidth * 0.45)));
+    // 只改 transform(合成器,不触发重绘);transition/shadow 在进入跟手时设一次
+    _wrapper.style.transform = 'translateX(' + t + 'px)';
+  }
+  function snapBack() {
+    if (!_wrapper) return;
+    _wrapper.style.transition = 'transform 0.25s ease-out, box-shadow 0.25s ease-out';
+    _wrapper.style.transform = 'translateX(0)';
+    _wrapper.style.boxShadow = '';
+    setTimeout(function() {
+      if (_wrapper) { _wrapper.style.transition = ''; _wrapper.style.willChange = ''; }
+    }, 280);
+  }
+  function commitBack() {
+    // 松手即回退:不再先做滑出动画再延迟跳转,避免「滑到一半停顿一下再回首页」的尴尬。
+    // 跟手阶段已给足交互反馈,跳转交给浏览器原生返回过渡。
+    history.length > 1 ? history.back() : (location.href = '/');
+  }
   document.addEventListener('touchstart', function(e) {
-    if (e.touches.length > 1) e.preventDefault();
+    if (e.touches.length > 1) { e.preventDefault(); return; }
+    var t = e.touches[0];
+    _touchStartX = t.clientX;
+    _touchStartY = t.clientY;
+    _insideHScroll = isInsideHScroll(e.target);
+    // 图片预览打开时不触发返回
+    var _lb = document.getElementById('imgLightbox');
+    var _lbOpen = !!(_lb && _lb.classList.contains('show'));
+    // 左缘返回:起点贴近左缘、不在横向滚动子模块内、且图片预览未打开
+    _edgeBack = t.clientX <= _EDGE && !_insideHScroll && !_lbOpen;
+    _edgeEngaged = false;
+    _edgeMaxDx = 0;
   }, { passive: false });
   document.addEventListener('touchmove', function(e) {
-    if (e.touches.length > 1) e.preventDefault();
+    if (e.touches.length > 1) { e.preventDefault(); return; }
+    var t = e.touches[0];
+    var dx = t.clientX - _touchStartX;
+    var dy = t.clientY - _touchStartY;
+    // 可横向滚动模块内:交给浏览器原生横向滚动,不拦截
+    if (_insideHScroll) return;
+    if (_edgeBack) {
+      // 明显向右且横向主导 → 进入跟手返回
+      if (dx > 6 && Math.abs(dx) > Math.abs(dy) * 0.8) {
+        if (!_edgeEngaged && _wrapper) {
+          // 只在此设一次 transition:none + 阴影 + will-change,避免逐帧重绘卡顿
+          _wrapper.style.transition = 'none';
+          _wrapper.style.boxShadow = '4px 0 20px rgba(0,0,0,0.15)';
+          _wrapper.style.willChange = 'transform';
+        }
+        _edgeEngaged = true;
+      }
+      if (_edgeEngaged) {
+        e.preventDefault();
+        if (dx > _edgeMaxDx) _edgeMaxDx = dx;
+        setFollow(dx);
+        return;
+      }
+    }
+    // Block horizontal swipe gestures (keep vertical scroll only)
+    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 10) {
+      e.preventDefault();
+    }
   }, { passive: false });
   document.addEventListener('touchend', function(e) {
     var now = Date.now();
-    if (now - lastTouchEnd <= 300) e.preventDefault();
-    lastTouchEnd = now;
+    if (now - _lastTouchEnd <= 300) e.preventDefault();
+    _lastTouchEnd = now;
+    if (_edgeBack) {
+      if (_edgeEngaged) {
+        var threshold = Math.max(80, window.innerWidth * 0.25);
+        if (_edgeMaxDx > threshold) commitBack();
+        else snapBack();
+      }
+      _edgeBack = false;
+      _edgeEngaged = false;
+    }
+  }, false);
+  document.addEventListener('touchcancel', function() {
+    _edgeBack = false;
+    _edgeEngaged = false;
+    snapBack();
   }, false);
   document.addEventListener('gesturestart', function(e) { e.preventDefault(); });
   document.addEventListener('gesturechange', function(e) { e.preventDefault(); });
@@ -952,6 +1063,14 @@ function updateThemeIcon() {
   var startX = 0, startY = 0, currentX = 0, currentY = 0;
   var isDragging = false;
   var startTime = 0;
+  // ---- 双指缩放状态(对齐微信公众号图片预览体验) ----
+  var mode = '';            // '' | 'swipe'(滑动切换) | 'pan'(缩放后平移) | 'pinch'(双指捏合)
+  var scale = 1, panX = 0, panY = 0;   // 当前图缩放与平移
+  var baseW = 0, baseH = 0;            // scale=1 时的显示尺寸,用于平移钳制
+  var startDist = 0, startScale = 1, startMidX = 0, startMidY = 0;
+  var startPanX = 0, startPanY = 0;
+  var lastTapTime = 0, lastTapX = 0, lastTapY = 0;
+  var MAX_SCALE = 5, DOUBLE_TAP_SCALE = 2.5;
 
   function openImgLightbox(index) {
     if (!images.length) return;
@@ -966,10 +1085,83 @@ function updateThemeIcon() {
     document.body.style.overflow = '';
   };
 
+  function getImg() {
+    var item = track.children[current];
+    return item ? item.querySelector('img') : null;
+  }
+
+  // 记录当前图 scale=1 时的显示尺寸,用于平移钳制
+  function ensureBase() {
+    if (baseW > 0 && baseH > 0) return;
+    var img = getImg();
+    if (!img) return;
+    img.style.transform = '';
+    img.style.transition = 'none';
+    var r = img.getBoundingClientRect();
+    baseW = r.width;
+    baseH = r.height;
+  }
+
+  // 钳制平移:放大后的图片边缘不拖出屏幕
+  function clampPan() {
+    var maxX = Math.max(0, (scale - 1) * baseW / 2);
+    var maxY = Math.max(0, (scale - 1) * baseH / 2);
+    panX = Math.max(-maxX, Math.min(maxX, panX));
+    panY = Math.max(-maxY, Math.min(maxY, panY));
+  }
+
+  function applyZoom(animate) {
+    var img = getImg();
+    if (!img) return;
+    img.style.transition = animate ? 'transform 0.2s ease' : 'none';
+    if (scale > 1.001) {
+      img.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')';
+    } else {
+      scale = 1; panX = 0; panY = 0;
+      img.style.transform = '';
+    }
+  }
+
+  function resetZoom() {
+    scale = 1; panX = 0; panY = 0; baseW = 0; baseH = 0;
+    var img = getImg();
+    if (img) { img.style.transform = ''; img.style.transition = ''; }
+  }
+
+  // 双击:1x 与 2.5x 间切换,以点击点为中心
+  function toggleZoom(tapX, tapY) {
+    if (scale > 1.001) {
+      scale = 1; panX = 0; panY = 0;
+      applyZoom(true);
+      return;
+    }
+    ensureBase();
+    scale = DOUBLE_TAP_SCALE;
+    panX = (window.innerWidth / 2 - tapX) * (scale - 1);
+    panY = (window.innerHeight / 2 - tapY) * (scale - 1);
+    clampPan();
+    applyZoom(true);
+  }
+
+  // 单击记为一次轻点,300ms 内同点二次轻点触发双击缩放
+  function feedTap(x, y) {
+    var now = Date.now();
+    if (now - lastTapTime < 300 && Math.abs(x - lastTapX) < 30 && Math.abs(y - lastTapY) < 30) {
+      lastTapTime = 0;
+      toggleZoom(x, y);
+      return true;
+    }
+    lastTapTime = now;
+    lastTapX = x;
+    lastTapY = y;
+    return false;
+  }
+
   function render() {
     track.innerHTML = images.map(function(src) {
       return '<div class="img-lightbox-item"><img src="' + src + '" alt=""></div>';
     }).join('');
+    resetZoom();
     updateTransform();
   }
 
@@ -980,48 +1172,154 @@ function updateThemeIcon() {
 
   function goTo(idx) {
     current = Math.max(0, Math.min(idx, images.length - 1));
+    resetZoom();
     updateTransform();
   }
 
   function onTouchStart(e) {
-    if (e.touches.length !== 1) return;
-    isDragging = true;
-    startX = e.touches[0].clientX;
-    startY = e.touches[0].clientY;
+    var touches = e.touches;
+    if (touches.length === 2) {
+      // 双指落下:把滑动中的轨道吸附回当前图,进入捏合
+      track.style.transition = 'none';
+      updateTransform();
+      var item = track.children[current];
+      if (item) item.style.transform = '';
+      mode = 'pinch';
+      isDragging = true;
+      var dx = touches[0].clientX - touches[1].clientX;
+      var dy = touches[0].clientY - touches[1].clientY;
+      startDist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+      startScale = scale;
+      startMidX = (touches[0].clientX + touches[1].clientX) / 2;
+      startMidY = (touches[0].clientY + touches[1].clientY) / 2;
+      startPanX = panX;
+      startPanY = panY;
+      ensureBase();
+      return;
+    }
+    if (touches.length !== 1) return;
+    startX = touches[0].clientX;
+    startY = touches[0].clientY;
     currentX = 0;
     currentY = 0;
     startTime = Date.now();
     track.style.transition = 'none';
+    if (scale > 1.001) {
+      // 已放大:单指 = 平移
+      mode = 'pan';
+      startPanX = panX;
+      startPanY = panY;
+    } else {
+      mode = 'swipe';
+    }
+    isDragging = true;
   }
 
   function onTouchMove(e) {
-    if (!isDragging || e.touches.length !== 1) return;
-    var x = e.touches[0].clientX;
-    var y = e.touches[0].clientY;
-    currentX = x - startX;
-    currentY = y - startY;
-    var offset = -current * window.innerWidth + currentX;
-    track.style.transform = 'translateX(' + offset + 'px)';
-    var item = track.children[current];
-    if (item) item.style.transform = 'translateY(' + currentY + 'px)';
+    if (!isDragging) return;
+    var touches = e.touches;
+    if (mode === 'pinch' && touches.length >= 2) {
+      var t0 = touches[0], t1 = touches[1];
+      var dx = t0.clientX - t1.clientX;
+      var dy = t0.clientY - t1.clientY;
+      var dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+      scale = Math.max(1, Math.min(MAX_SCALE, startScale * dist / startDist));
+      var midX = (t0.clientX + t1.clientX) / 2;
+      var midY = (t0.clientY + t1.clientY) / 2;
+      panX = startPanX + (midX - startMidX);
+      panY = startPanY + (midY - startMidY);
+      clampPan();
+      applyZoom(false);
+      return;
+    }
+    if (mode === 'pan' && touches.length === 1) {
+      var t = touches[0];
+      panX = startPanX + (t.clientX - startX);
+      panY = startPanY + (t.clientY - startY);
+      clampPan();
+      applyZoom(false);
+      return;
+    }
+    if (mode === 'swipe' && touches.length === 1) {
+      var x = touches[0].clientX;
+      var y = touches[0].clientY;
+      currentX = x - startX;
+      currentY = y - startY;
+      var offset = -current * window.innerWidth + currentX;
+      track.style.transform = 'translateX(' + offset + 'px)';
+      var item = track.children[current];
+      if (item) item.style.transform = 'translateY(' + currentY + 'px)';
+    }
   }
 
   function onTouchEnd(e) {
     if (!isDragging) return;
-    isDragging = false;
+    var remaining = e.touches.length;
+
+    if (mode === 'pinch') {
+      if (scale <= 1.001) {
+        // 捏回 1x:回到滑动切换模式
+        resetZoom();
+        track.style.transition = 'transform 0.25s ease';
+        updateTransform();
+        isDragging = false;
+        if (remaining === 1) {
+          // 仍有一指:续作单指滑动
+          startX = e.touches[0].clientX;
+          startY = e.touches[0].clientY;
+          currentX = 0; currentY = 0;
+          startTime = Date.now();
+          mode = 'swipe';
+          isDragging = true;
+        }
+        return;
+      }
+      // 保持放大:剩余一指转为平移
+      applyZoom(true);
+      if (remaining === 1) {
+        mode = 'pan';
+        startX = e.touches[0].clientX;
+        startY = e.touches[0].clientY;
+        startPanX = panX;
+        startPanY = panY;
+        isDragging = true;
+      } else {
+        isDragging = false;
+      }
+      return;
+    }
+
+    if (mode === 'pan') {
+      var tapSmall = Math.abs(panX - startPanX) < 12 && Math.abs(panY - startPanY) < 12 && (Date.now() - startTime) < 250;
+      if (remaining === 0 && tapSmall) {
+        if (!feedTap(startX, startY)) applyZoom(true);
+      } else {
+        applyZoom(true);
+      }
+      isDragging = false;
+      return;
+    }
+
+    // mode === 'swipe'
     var item = track.children[current];
     if (item) item.style.transform = '';
-
-    // Pull down to close
-    if (currentY > 120 && Math.abs(currentX) < Math.abs(currentY)) {
-      window.closeImgLightbox();
+    var elapsed = Date.now() - startTime;
+    var isTap = Math.abs(currentX) < 10 && Math.abs(currentY) < 10 && elapsed < 250;
+    isDragging = false;
+    if (isTap && remaining === 0) {
+      feedTap(startX, startY);
       track.style.transition = 'transform 0.25s ease';
       updateTransform();
       return;
     }
 
     track.style.transition = 'transform 0.25s ease';
-    var elapsed = Date.now() - startTime;
+    // Pull down to close
+    if (currentY > 120 && Math.abs(currentX) < Math.abs(currentY)) {
+      window.closeImgLightbox();
+      updateTransform();
+      return;
+    }
     var threshold = window.innerWidth * 0.2;
     if (Math.abs(currentX) > threshold || (Math.abs(currentX) > 30 && elapsed < 300)) {
       if (currentX > 0) goTo(current - 1);
@@ -1096,6 +1394,8 @@ interface ArticleMeta {
   pinned?: boolean;
   pinnedAt?: number;
   unread?: boolean;
+  /** 隐藏子文章:被其他文章引用而自动存档,从列表页/搜索排除,但保留本地页面供链接打开 */
+  hidden?: boolean;
   likes?: number;
   retweets?: number;
   replies?: number;
@@ -1189,6 +1489,50 @@ export async function deleteArticle(fileName: string): Promise<boolean> {
   return false;
 }
 
+/** 首页分页:初始只渲染最近 N 条,滚到底「加载更多」——让首页从 4.6MB 降到 ~200KB,
+ *  从文章返回时加载/bfcache 都快,消除「停顿」。 */
+export const INDEX_PAGE_SIZE = 60;
+
+/** 文章 → 首页/加载更多用的紧凑项(字段与 renderList 消费一致) */
+export function toCompactArticle(a: ArticleMeta) {
+  return {
+    fileName: a.fileName,
+    title: a.title.length > 80 ? a.title.substring(0, 80) + '...' : a.title,
+    author: a.author,
+    authorHandle: a.authorHandle || '',
+    authorAvatar: a.authorAvatar || '',
+    tweetUrl: a.tweetUrl || '',
+    tweetDate: a.tweetDate,
+    savedDate: a.savedDate,
+    savedTimestamp: a.savedTimestamp,
+    tweetTimestamp: a.tweetTimestamp,
+    sourceType: a.sourceType || 'twitter',
+    pinned: !!a.pinned,
+    pinnedAt: a.pinnedAt || 0,
+    unread: !!a.unread,
+    likes: a.likes || 0,
+    retweets: a.retweets || 0,
+    replies: a.replies || 0,
+  };
+}
+
+/** 分页取可见文章(置顶在前,savedTimestamp 降序)——与首页默认排序一致 */
+export function getVisibleArticlesPage(offset: number, limit: number): { items: ReturnType<typeof toCompactArticle>[]; total: number } {
+  const meta = loadMeta();
+  const sorted = meta
+    .filter(m => !m.hidden && m.fileName.endsWith('.html'))
+    .sort((a, b) => {
+      if (a.pinned && !b.pinned) return -1;
+      if (!a.pinned && b.pinned) return 1;
+      if (a.pinned && b.pinned) return (b.pinnedAt || 0) - (a.pinnedAt || 0);
+      return b.savedTimestamp - a.savedTimestamp;
+    });
+  return {
+    items: sorted.slice(offset, offset + limit).map(toCompactArticle),
+    total: sorted.length,
+  };
+}
+
 function renderIndexHtml(
   articlesBySaved: ArticleMeta[],
   articlesByTweet: ArticleMeta[]
@@ -1245,27 +1589,10 @@ function renderIndexHtml(
           </li>`;
     }).join('');
 
-  const savedList = buildList(articlesBySaved);
-  const dataJson = JSON.stringify(
-    articlesBySaved.map((a) => ({
-      fileName: a.fileName,
-      title: a.title.length > 80 ? a.title.substring(0, 80) + '...' : a.title,
-      author: a.author,
-      authorAvatar: a.authorAvatar || '',
-      tweetUrl: a.tweetUrl || '',
-      tweetDate: a.tweetDate,
-      savedDate: a.savedDate,
-      savedTimestamp: a.savedTimestamp,
-      tweetTimestamp: a.tweetTimestamp,
-      sourceType: a.sourceType || 'twitter',
-      pinned: !!a.pinned,
-      pinnedAt: a.pinnedAt || 0,
-      unread: !!a.unread,
-      likes: a.likes || 0,
-      retweets: a.retweets || 0,
-      replies: a.replies || 0,
-    }))
-  );
+  const totalCount = articlesBySaved.length;
+  const firstPage = articlesBySaved.slice(0, INDEX_PAGE_SIZE);
+  const savedList = buildList(firstPage);
+  const dataJson = JSON.stringify(firstPage.map(toCompactArticle));
 
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1392,13 +1719,16 @@ function renderIndexHtml(
       border-color: var(--accent);
       transition: none !important;
     }
-    .search-input {
-      padding: 5px 10px; border: 1px solid var(--border); border-radius: 14px;
-      background: transparent; color: var(--text); font-size: 13px;
-      width: 140px; outline: none; transition: all 0.2s;
+    .nav-search {
+      display: flex; align-items: center; gap: 4px;
+      padding: 4px 12px; border: 1px solid var(--border); border-radius: 10px;
+      background: #fafafa; color: var(--text-tertiary); font-size: 13px;
+      min-width: 100px;
+      cursor: pointer; text-decoration: none; transition: all 0.2s;
     }
-    .search-input::placeholder { color: var(--text-tertiary); font-size: 12px; }
-    .search-input:focus { border-color: var(--accent); width: 160px; }
+    [data-theme="dark"] .nav-search { background: #242424; }
+    .nav-search:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+    .nav-search svg { width: 14px; height: 14px; flex-shrink: 0; }
     .article-list { list-style: none; }
     .article-item {
       background: var(--surface); border-radius: 16px; margin-bottom: 12px;
@@ -1473,6 +1803,14 @@ function renderIndexHtml(
       text-align: center; color: var(--text-secondary); font-size: 15px;
       box-shadow: 0 1px 3px var(--shadow-sm);
     }
+    /* ---- 加载更多(分页) ---- */
+    .load-more-wrap { text-align: center; padding: 18px 0 10px; color: var(--text-tertiary); font-size: 14px; }
+    .load-more-btn {
+      padding: 10px 30px; border: 1px solid var(--border); border-radius: 18px;
+      background: var(--surface); color: var(--text-secondary); font-size: 14px; cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .load-more-btn:active { background: var(--accent-bg); color: var(--text); }
     /* ---- Swipe actions (mobile) ---- */
     .swipe-wrap { position: relative; overflow: hidden; touch-action: pan-y; -webkit-touch-callout: none; background: var(--surface); }
     .swipe-content { position: relative; z-index: 2; background: var(--surface); transition: transform 0.25s ease; width: 100%; }
@@ -1499,7 +1837,7 @@ function renderIndexHtml(
     .refresh-btn.spinning svg { animation: refresh-spin 0.6s linear; }
     @keyframes refresh-spin { to { transform: rotate(360deg); } }
     @media (max-width: 480px) {
-      .nav-bar { padding: max(4px, env(safe-area-inset-top)) 12px 8px; }
+      .nav-bar { padding: max(4px, env(safe-area-inset-top)) 16px 8px; }
       .nav-bar .nav-title { font-size: 17px; }
       .nav-bar .nav-count { font-size: 12px; }
       .sort-btn { padding: 4px 8px; font-size: 11px; }
@@ -1709,7 +2047,11 @@ function renderIndexHtml(
     </button>
   </div>
   <div class="nav-row2">
-    <div class="nav-count" id="count">共 ${articlesBySaved.length} 条</div>
+    <a href="/search" class="nav-search" title="搜索">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      搜索
+    </a>
+    <div class="nav-count" id="count">共 ${totalCount} 条</div>
     <div class="header-controls">
       <div class="sort-buttons">
         <button class="sort-btn active" onclick="sortBy('saved')" id="btn-saved">收藏</button>
@@ -1723,10 +2065,51 @@ function renderIndexHtml(
     <ul class="article-list" id="article-list">
       ${articlesBySaved.length === 0 ? '<li class="empty">还没有保存的推文</li>' : savedList}
     </ul>
+    ${totalCount > INDEX_PAGE_SIZE ? '<div class="load-more-wrap" id="loadMoreWrap"><button class="load-more-btn" onclick="loadMore()">加载更多</button></div>' : ''}
   </div>
   <script>
     let articlesData = ${dataJson};
     const originalArticlesData = articlesData.slice();
+    const TOTAL_COUNT = ${totalCount};
+    let _loadingMore = false;
+    let _noMore = articlesData.length >= TOTAL_COUNT;
+    function loadMore() {
+      if (_loadingMore || _noMore) return;
+      // 搜索态下不加载更多(列表已被搜索替换)
+      var input = document.getElementById('search-input');
+      if (input && input.value.trim()) return;
+      _loadingMore = true;
+      var wrap = document.getElementById('loadMoreWrap');
+      if (wrap) wrap.textContent = '加载中…';
+      fetch('/api/articles?offset=' + articlesData.length + '&limit=' + 60)
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          var items = (d && d.items) || [];
+          _noMore = items.length < 60;
+          var known = {};
+          articlesData.forEach(function(a) { known[a.fileName] = 1; });
+          var added = items.filter(function(a) { return !known[a.fileName]; });
+          articlesData = articlesData.concat(added);
+          renderList();
+          if (wrap) {
+            if (_noMore) wrap.style.display = 'none';
+            else wrap.innerHTML = '<button class="load-more-btn" onclick="loadMore()">加载更多</button>';
+          }
+          _loadingMore = false;
+        })
+        .catch(function() {
+          _loadingMore = false;
+          if (wrap) wrap.innerHTML = '<button class="load-more-btn" onclick="loadMore()">加载更多</button>';
+        });
+    }
+    // 滚到底自动加载更多
+    window.addEventListener('scroll', function() {
+      if (_loadingMore || _noMore) return;
+      var wrap = document.getElementById('loadMoreWrap');
+      if (!wrap || wrap.style.display === 'none') return;
+      var r = wrap.getBoundingClientRect();
+      if (r.top < window.innerHeight + 300) loadMore();
+    }, { passive: true });
     let activeMenu = null;
     let activeMenuParent = null;
     let menuJustOpened = false;
@@ -2213,7 +2596,7 @@ function renderIndexHtml(
           var q = input.value.trim();
           if (!q) {
             articlesData = originalArticlesData.slice();
-            document.getElementById('count').textContent = '共 ' + articlesData.length + ' 条';
+            document.getElementById('count').textContent = '共 ' + TOTAL_COUNT + ' 条';
             renderList();
             return;
           }
@@ -2496,7 +2879,57 @@ export function ensureImageExtMatchesContent(destPath: string): string {
   }
 }
 
-async function downloadFile(url: string, destPath: string, referer?: string): Promise<void> {
+// ---- COS upload (optional) ----
+// 上传成功则删除本地副本并返回 COS URL;未启用或上传失败返回 null,调用方回退本地相对路径
+async function tryUploadMediaToCos(localPath: string, kind: CosKind): Promise<string | null> {
+  if (!isCosEnabled()) return null;
+  const fileName = path.basename(localPath);
+  try {
+    const url = await uploadToCos(localPath, `${kind === 'video' ? 'videos' : 'images'}/${fileName}`, mediaContentType(fileName), kind);
+    try { fs.unlinkSync(localPath); } catch { /* keep local copy on unlink failure */ }
+    return url;
+  } catch (err) {
+    console.error(`[cos] Upload failed for ${fileName} — ${err instanceof Error ? err.message : err}`);
+    return null;
+  }
+}
+
+function mediaContentType(fileName: string): string {
+  const ext = path.extname(fileName).toLowerCase();
+  const map: Record<string, string> = {
+    '.mp4': 'video/mp4',
+    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+    '.png': 'image/png', '.gif': 'image/gif',
+    '.webp': 'image/webp', '.svg': 'image/svg+xml',
+  };
+  return map[ext] || 'application/octet-stream';
+}
+
+export async function downloadFile(url: string, destPath: string, referer?: string): Promise<void> {
+  // 长视频走代理可能下几十分钟,中途断流在所难免:保留半成品,下一轮 Range 续传
+  const MAX_ATTEMPTS = 5;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      await downloadOnce(url, destPath, referer);
+      return;
+    } catch (err) {
+      lastErr = err;
+      // 非媒体响应(403 HTML 等)重试无意义,直接抛
+      if (err instanceof Error && err.message.startsWith('Not a media file')) throw err;
+      if (attempt < MAX_ATTEMPTS) {
+        const partial = fs.existsSync(destPath) ? fs.statSync(destPath).size : 0;
+        console.warn(`[download] attempt ${attempt}/${MAX_ATTEMPTS} failed, ${partial} bytes kept for resume: ${err instanceof Error ? err.message : err}`);
+        await new Promise(r => setTimeout(r, 2000 * attempt));
+      }
+    }
+  }
+  // 最终失败才删半成品,避免下次把残件当成品
+  fs.unlink(destPath, () => {});
+  throw lastErr;
+}
+
+async function downloadOnce(url: string, destPath: string, referer?: string): Promise<void> {
   // Feishu/Lark CDN often requires browser-like UA + Referer, otherwise returns 403 HTML.
   // WeChat mmbiz CDN also prefers a page Referer.
   let ref = referer || '';
@@ -2516,6 +2949,10 @@ async function downloadFile(url: string, destPath: string, referer?: string): Pr
     Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
   };
   if (ref) headers.Referer = ref;
+
+  // 断点续传:已有半成品则从当前大小继续
+  const resumeFrom = fs.existsSync(destPath) ? fs.statSync(destPath).size : 0;
+  if (resumeFrom > 0) headers.Range = `bytes=${resumeFrom}-`;
 
   // Try proxy first, then direct as fallback
   let response;
@@ -2543,26 +2980,50 @@ async function downloadFile(url: string, destPath: string, referer?: string): Pr
     throw new Error('Not a media file: ' + contentType);
   }
 
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(destPath);
-    const timer = setTimeout(() => {
-      file.destroy();
-      fs.unlink(destPath, () => {});
-      reject(new Error('Timeout'));
-    }, 20000);
+  // 期望总大小:206 时从 Content-Range 末尾取总量;否则用 Content-Length
+  let expectedTotal = NaN;
+  const crMatch = /\/(\d+)\s*$/.exec(String(response.headers['content-range'] || ''));
+  if (crMatch) {
+    expectedTotal = parseInt(crMatch[1], 10);
+  } else {
+    const cl = parseInt(String(response.headers['content-length'] || ''), 10);
+    if (!Number.isNaN(cl)) expectedTotal = response.status === 206 ? cl + resumeFrom : cl;
+  }
+  // 请求了续传但服务器忽略 Range 返回 200 → 从头重写
+  const append = resumeFrom > 0 && response.status === 206;
 
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(destPath, { flags: append ? 'a' : 'w' });
+    // 长视频可能下几十分钟:超时按"无数据活动"判定(60s 无 chunk 才放弃),不按总时长
+    const STALL_MS = 60_000;
+    const cleanup = (err: Error) => {
+      clearTimeout(timer);
+      file.destroy();
+      reject(err); // 半成品保留,由外层决定是否续传/删除
+    };
+    const onStall = () => cleanup(new Error('Download stalled (60s no data)'));
+    let timer = setTimeout(onStall, STALL_MS);
+    response.data.on('data', () => {
+      clearTimeout(timer);
+      timer = setTimeout(onStall, STALL_MS);
+    });
+    response.data.on('error', (err: Error) => cleanup(err));
     response.data.pipe(file);
     file.on('finish', () => {
       clearTimeout(timer);
       file.close();
+      // 校验总大小,不符说明续传衔接出错——删掉重来,不交付残件
+      if (!Number.isNaN(expectedTotal)) {
+        const actual = fs.existsSync(destPath) ? fs.statSync(destPath).size : 0;
+        if (actual !== expectedTotal) {
+          fs.unlink(destPath, () => {});
+          reject(new Error(`Size mismatch: got ${actual}, expected ${expectedTotal}`));
+          return;
+        }
+      }
       resolve();
     });
-    file.on('error', (err: Error) => {
-      clearTimeout(timer);
-      file.destroy();
-      fs.unlink(destPath, () => {});
-      reject(err);
-    });
+    file.on('error', (err: Error) => cleanup(err));
   });
 }
 
@@ -2594,10 +3055,125 @@ export async function saveTweet(tweet: FetchedTweet): Promise<string> {
   return saveTweetInternal(tweet, true);
 }
 
-async function saveTweetInternal(tweet: FetchedTweet, autoArchive = true): Promise<string> {
+/**
+ * 内联展开被引推文/文章:把 embedded 的全文合并进 main 正文底部。
+ * 镜像 fetcher.expandQuoteOrRetweet 的媒体重索引 —— [IMG:N]/[VIDEO:N] 改写为主媒体数组的新索引,
+ * 未引用的媒体追加为新的 marker,最后以「以下是原文:」分隔合并。
+ * 用于「正文只引用 1 篇」的场景(引用多篇时另存为隐藏子文章)。
+ */
+function mergeEmbeddedArticle(main: FetchedTweet, embedded: FetchedTweet): FetchedTweet {
+  const embeddedText = embedded.text?.trim();
+  if (!embeddedText) return main;
+  const mergedPhotos: TweetPhoto[] = [...(main.media?.photos || [])];
+  const mergedVideos: TweetVideo[] = [...(main.media?.videos || [])];
+
+  let original = embeddedText;
+  original = original.replace(/\[IMG:(\d+)\]/g, (_m, idx) => {
+    const i = parseInt(idx, 10);
+    const photo = embedded.media?.photos?.[i];
+    if (photo) {
+      const newIdx = mergedPhotos.length;
+      mergedPhotos.push(photo);
+      return `[IMG:${newIdx}]`;
+    }
+    return '';
+  });
+  original = original.replace(/\[VIDEO:(\d+)\]/g, (_m, idx) => {
+    const i = parseInt(idx, 10);
+    const video = embedded.media?.videos?.[i];
+    if (video) {
+      const newIdx = mergedVideos.length;
+      mergedVideos.push(video);
+      return `[VIDEO:${newIdx}]`;
+    }
+    return '';
+  });
+
+  // 追加未引用的被引媒体(去重)
+  if (embedded.media?.photos) {
+    for (const photo of embedded.media.photos) {
+      if (!mergedPhotos.some(p => p.url === photo.url)) {
+        const newIdx = mergedPhotos.length;
+        mergedPhotos.push(photo);
+        original += `\n[IMG:${newIdx}]`;
+      }
+    }
+  }
+  if (embedded.media?.videos) {
+    for (const video of embedded.media.videos) {
+      if (!mergedVideos.some(v => v.url === video.url)) {
+        const newIdx = mergedVideos.length;
+        mergedVideos.push(video);
+        original += `\n[VIDEO:${newIdx}]`;
+      }
+    }
+  }
+
+  return {
+    ...main,
+    text: `${main.text || ''}\n\n**以下是原文：**\n\n${original}`,
+    media: mergedPhotos.length || mergedVideos.length
+      ? { photos: mergedPhotos, videos: mergedVideos }
+      : main.media,
+  };
+}
+
+async function saveTweetInternal(tweet: FetchedTweet, autoArchive = true, hidden = false): Promise<string> {
   ensureDirs();
   // Defense in depth: every source path normalizes before disk / meta write
   tweet = normalizeTweetFields(tweet);
+
+  // 内联/隐藏引用文章(必须在媒体下载之前 —— 合并进来的媒体才能走正常下载流程)。
+  // 只在 depth 0 (autoArchive=true) 执行,避免无限递归。
+  if (autoArchive) {
+    const tweetUrlPattern = /https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\/([A-Za-z0-9_]+)\/status\/(\d+)/g;
+    const embeddedUrls = new Set<string>();
+    let m;
+    while ((m = tweetUrlPattern.exec(tweet.text)) !== null) {
+      embeddedUrls.add(m[0]);
+    }
+    // Skip the tweet's own URL
+    if (tweet.url) {
+      const selfMatch = tweet.url.match(/^(https?:\/\/[^/]+\/[^/]+\/status\/\d+)/);
+      if (selfMatch) embeddedUrls.delete(selfMatch[0]);
+    }
+    if (embeddedUrls.size === 1) {
+      // 恰好 1 个引用 → 内联展开全文,不单独建档、不进列表
+      const [onlyUrl] = [...embeddedUrls];
+      const { parseTweetUrl } = require('../utils/url');
+      const { fetchTweet } = require('./fetcher');
+      try {
+        const parsed = parseTweetUrl(onlyUrl);
+        if (parsed) {
+          console.log('[auto-archive] Inline-expanding single embedded tweet:', onlyUrl);
+          const embeddedTweet = await fetchTweet(parsed);
+          tweet = mergeEmbeddedArticle(tweet, embeddedTweet);
+        }
+      } catch (err) {
+        console.error('[auto-archive] Inline-expand failed for', onlyUrl, ':', err instanceof Error ? err.message : err);
+      }
+    } else if (embeddedUrls.size > 1) {
+      // 多个引用 → 全部下载存档为隐藏子文章(列表/搜索排除,链接仍打开本地详情页)
+      const { parseTweetUrl } = require('../utils/url');
+      const { fetchTweet } = require('./fetcher');
+      const existingMeta = loadMeta();
+      for (const url of embeddedUrls) {
+        if (existingMeta.some(em => em.tweetUrl === url)) continue;
+        try {
+          const parsed = parseTweetUrl(url);
+          if (!parsed) continue;
+          console.log('[auto-archive] Fetching embedded tweet:', url);
+          const embeddedTweet = await fetchTweet(parsed);
+          // Save without recursive auto-archive (depth 1); hidden sub-article
+          await saveTweetInternal(embeddedTweet, false, true);
+          console.log('[auto-archive] Saved hidden embedded tweet:', url);
+        } catch (err) {
+          console.error('[auto-archive] Failed for', url, ':', err instanceof Error ? err.message : err);
+        }
+      }
+    }
+  }
+
   const fileNameBase = sanitizeFileName(tweet.author.screen_name) + '_' + tweet.id;
   const htmlFileName = fileNameBase + '.html';
   const htmlPath = path.join(ARTICLES_DIR, htmlFileName);
@@ -2615,7 +3191,9 @@ async function saveTweetInternal(tweet: FetchedTweet, autoArchive = true): Promi
       avatarLocalPath = await downloadAvatar(tweet.author.avatar_url, avatarBasePath);
     }
     if (avatarLocalPath) {
-      tweet.author.avatar_url = '../avatars/' + path.basename(avatarLocalPath);
+      const avatarRelative = '../avatars/' + path.basename(avatarLocalPath);
+      // 尝试上传 COS,失败回退本地相对路径
+      tweet.author.avatar_url = (await tryUploadMediaToCos(avatarLocalPath, 'image')) || avatarRelative;
     }
   }
 
@@ -2633,7 +3211,9 @@ async function saveTweetInternal(tweet: FetchedTweet, autoArchive = true): Promi
   // Try to download images (best-effort via proxy); skip if already exists
   // Feishu/Lark images: pass article URL as Referer so CDN allows the fetch.
   const imgReferer = tweet.url || undefined;
-  for (let i = 0; i < photos.length; i++) {
+  // Process images in parallel (concurrency limit) — WeChat articles often have 20-50+ images.
+  const IMAGE_DOWNLOAD_CONCURRENCY = 5;
+  const processImage = async (i: number) => {
     const photo = photos[i];
     // Initial ext from URL (wx_fmt / mmbiz_png / path); corrected by magic sniff after download
     let ext = guessImageExtFromUrl(photo.url);
@@ -2654,8 +3234,8 @@ async function saveTweetInternal(tweet: FetchedTweet, autoArchive = true): Promi
 
     if (fs.existsSync(imgPath) && fs.statSync(imgPath).size > 0) {
       const fixed = ensureImageExtMatchesContent(imgPath);
-      localImagePaths[i] = '../images/' + path.basename(fixed);
-      continue;
+      localImagePaths[i] = await tryUploadMediaToCos(fixed, 'image') || '../images/' + path.basename(fixed);
+      return;
     }
 
     try {
@@ -2668,63 +3248,59 @@ async function saveTweetInternal(tweet: FetchedTweet, autoArchive = true): Promi
       }
       // SVG mislabeled as .jpg → naturalWidth 0 in browser; PNG-as-jpg often works but fix anyway
       const fixed = ensureImageExtMatchesContent(imgPath);
-      localImagePaths[i] = '../images/' + path.basename(fixed);
+      localImagePaths[i] = await tryUploadMediaToCos(fixed, 'image') || '../images/' + path.basename(fixed);
     } catch (err) {
       console.error(`[save] Failed to download image ${i}: ${photo.url} — ${err instanceof Error ? err.message : err}`);
     }
+  };
+  // Concurrency-limited runner
+  const running = new Set<Promise<void>>();
+  for (let i = 0; i < photos.length; i++) {
+    const p = processImage(i).finally(() => running.delete(p));
+    running.add(p);
+    if (running.size >= IMAGE_DOWNLOAD_CONCURRENCY) {
+      await Promise.race(running);
+    }
   }
+  await Promise.allSettled(running);
 
   // Try to download videos (best-effort via proxy); skip if already exists
-  for (let i = 0; i < videos.length; i++) {
+  // Videos are typically few (1-3) but large; light concurrency helps.
+  const VIDEO_DOWNLOAD_CONCURRENCY = 3;
+  const processVideo = async (i: number) => {
     const video = videos[i];
     const ext = '.mp4';
     const vidFileName = fileNameBase + '_vid' + i + ext;
     const vidPath = path.join(VIDEOS_DIR, vidFileName);
     if (fs.existsSync(vidPath) && fs.statSync(vidPath).size > 0) {
-      localVideoPaths[i] = '../videos/' + vidFileName;
-      continue;
+      localVideoPaths[i] = (await tryUploadMediaToCos(vidPath, 'video')) || '../videos/' + vidFileName;
+      return;
     }
     try {
       await downloadFile(video.url, vidPath);
-      localVideoPaths[i] = '../videos/' + vidFileName;
+      localVideoPaths[i] = (await tryUploadMediaToCos(vidPath, 'video')) || '../videos/' + vidFileName;
     } catch (err) {
       console.error(`[save] Failed to download video ${i}: ${video.url} — ${err instanceof Error ? err.message : err}`);
     }
+  };
+  {
+    const running = new Set<Promise<void>>();
+    for (let i = 0; i < videos.length; i++) {
+      const p = processVideo(i).finally(() => running.delete(p));
+      running.add(p);
+      if (running.size >= VIDEO_DOWNLOAD_CONCURRENCY) {
+        await Promise.race(running);
+      }
+    }
+    await Promise.allSettled(running);
   }
 
-  // Auto-archive embedded tweet URLs BEFORE rendering HTML,
-  // so convertMarkdownToHtml can link to the local article page.
-  // Only at depth 0 (autoArchive=true) to avoid infinite recursion.
-  if (autoArchive) {
-    const tweetUrlPattern = /https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\/([A-Za-z0-9_]+)\/status\/(\d+)/g;
-    const embeddedUrls = new Set<string>();
-    let m;
-    while ((m = tweetUrlPattern.exec(tweet.text)) !== null) {
-      embeddedUrls.add(m[0]);
-    }
-    // Skip the tweet's own URL
-    if (tweet.url) {
-      const selfMatch = tweet.url.match(/^(https?:\/\/[^/]+\/[^/]+\/status\/\d+)/);
-      if (selfMatch) embeddedUrls.delete(selfMatch[0]);
-    }
-    if (embeddedUrls.size > 0) {
-      const { parseTweetUrl } = require('../utils/url');
-      const { fetchTweet } = require('./fetcher');
-      const existingMeta = loadMeta();
-      for (const url of embeddedUrls) {
-        if (existingMeta.some(em => em.tweetUrl === url)) continue;
-        try {
-          const parsed = parseTweetUrl(url);
-          if (!parsed) continue;
-          console.log('[auto-archive] Fetching embedded tweet:', url);
-          const embeddedTweet = await fetchTweet(parsed);
-          // Save without recursive auto-archive (depth 1)
-          await saveTweetInternal(embeddedTweet, false);
-          console.log('[auto-archive] Saved embedded tweet:', url);
-        } catch (err) {
-          console.error('[auto-archive] Failed for', url, ':', err instanceof Error ? err.message : err);
-        }
-      }
+  // 保存原文 markdown 备份(用于后续异步翻译)
+  if (tweet.sourceType !== 'wechat' && isNonChinese(tweet.text.replace(/<[^>]+>/g, ''))) {
+    try {
+      fs.writeFileSync(path.join(ARTICLES_DIR, fileNameBase + '.orig.md'), tweet.text, 'utf-8');
+    } catch (err) {
+      console.error(`[save] orig.md backup failed: ${err instanceof Error ? err.message : err}`);
     }
   }
 
@@ -2743,7 +3319,7 @@ async function saveTweetInternal(tweet: FetchedTweet, autoArchive = true): Promi
     authorHandle: tweet.author.screen_name,
     authorAvatar: tweet.author.avatar_url?.startsWith('../')
       ? tweet.author.avatar_url.replace(/^\.\.\//, '/')
-      : 'https://unavatar.io/x/' + tweet.author.screen_name,
+      : tweet.author.avatar_url || 'https://unavatar.io/x/' + tweet.author.screen_name,
     tweetUrl: tweet.url,
     tweetDate: formatDate(tweet.created_timestamp),
     savedDate: formatDate(Math.floor(now / 1000)),
@@ -2754,6 +3330,7 @@ async function saveTweetInternal(tweet: FetchedTweet, autoArchive = true): Promi
     pinned: existing ? existing.pinned : false,
     pinnedAt: existing ? existing.pinnedAt : undefined,
     unread: existing ? existing.unread : true,
+    hidden: existing ? existing.hidden : (hidden || undefined),
     likes: tweet.likes,
     retweets: tweet.retweets,
     replies: tweet.replies,
@@ -2763,20 +3340,23 @@ async function saveTweetInternal(tweet: FetchedTweet, autoArchive = true): Promi
   saveMeta(meta);
 
   // Update keyword index immediately; generate embedding in the background.
-  try {
-    insertSearchArticle({
-      fileName: metaEntry.fileName,
-      title: metaEntry.title,
-      author: metaEntry.author,
-      authorHandle: metaEntry.authorHandle,
-      body: tweet.text,
-    });
-    generateEmbedding(metaEntry.fileName, `${metaEntry.title}\n${metaEntry.author}\n${tweet.text}`).catch(() => {});
-    // Extract opinions asynchronously (don't block save)
-    extractOpinions(metaEntry.fileName).catch(err =>
-      console.error('[saveTweet] Opinion extraction failed:', err instanceof Error ? err.message : err));
-  } catch (err) {
-    console.error('[saveTweet] Search index update failed:', err instanceof Error ? err.message : err);
+  // 隐藏子文章不进搜索索引、不抽观点(仍保留本地页面供链接打开)。
+  if (!hidden) {
+    try {
+      insertSearchArticle({
+        fileName: metaEntry.fileName,
+        title: metaEntry.title,
+        author: metaEntry.author,
+        authorHandle: metaEntry.authorHandle,
+        body: tweet.text,
+      });
+      generateEmbedding(metaEntry.fileName, `${metaEntry.title}\n${metaEntry.author}\n${tweet.text}`).catch(() => {});
+      // Extract opinions asynchronously (don't block save)
+      extractOpinions(metaEntry.fileName).catch(err =>
+        console.error('[saveTweet] Opinion extraction failed:', err instanceof Error ? err.message : err));
+    } catch (err) {
+      console.error('[saveTweet] Search index update failed:', err instanceof Error ? err.message : err);
+    }
   }
 
   await rebuildIndex();
@@ -2789,13 +3369,16 @@ export async function rebuildIndex(): Promise<void> {
   const validMeta = meta.filter(m => existingFiles.has(m.fileName));
   if (validMeta.length !== meta.length) { saveMeta(validMeta); }
 
+  // 隐藏子文章保留在 meta(供 convertMarkdownToHtml 链接改写),但排除出列表与搜索索引
+  const visibleMeta = validMeta.filter(m => !m.hidden);
+
   // Prune search index entries for missing articles.
-  try { syncSearchMeta(validMeta.map(m => m.fileName)); } catch (err) {
+  try { syncSearchMeta(visibleMeta.map(m => m.fileName)); } catch (err) {
     console.error('[rebuildIndex] Search meta sync failed:', err instanceof Error ? err.message : err);
   }
 
   const sortWithPinned = (sortFn: (a: ArticleMeta, b: ArticleMeta) => number) => {
-    return [...validMeta].sort((a, b) => {
+    return [...visibleMeta].sort((a, b) => {
       if (a.pinned && !b.pinned) return -1;
       if (!a.pinned && b.pinned) return 1;
       if (a.pinned && b.pinned) return (b.pinnedAt || 0) - (a.pinnedAt || 0);
@@ -2827,4 +3410,299 @@ export function getAvatarsDir(): string {
 export function getVideosDir(): string {
   ensureDirs();
   return VIDEOS_DIR;
+}
+
+// ---- 异步翻译(保存后后台跑,不阻塞响应) ----
+
+/**
+ * 对已保存的文章进行异步翻译:用 tag-split 替换 article-content 内纯文本,不动 HTML 标签。
+ * 翻译后更新 HTML 标题、meta.json、重建索引。
+ */
+export async function translateArticleContent(htmlFileName: string): Promise<void> {
+  const p = path.join(ARTICLES_DIR, htmlFileName);
+  if (!fs.existsSync(p)) return;
+
+  // 检查原文是否非中文
+  const origPath = p.replace(/\.html$/, '.orig.md');
+  let checkText: string;
+  if (fs.existsSync(origPath)) {
+    checkText = fs.readFileSync(origPath, 'utf-8');
+  } else {
+    checkText = fs.readFileSync(p, 'utf-8').replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
+  }
+  if (!isNonChinese(checkText)) return;
+  console.log(`[async-translate] starting ${htmlFileName}`);
+
+  // ---- tag-split helper (same as translate-foreign-articles.ts) ----
+  type Seg = { tag: true; raw: string } | { tag: false; raw: string; trans?: string };
+type TextSeg = Extract<Seg, { tag: false }>;
+  const PROTECT_RE = /<\x2f?(pre|code|script|style)\b[^>]*>/gi;
+
+  const segHtml = (html: string): Seg[] => {
+    const stack: { tag: string; start: number }[] = [];
+    const rawRanges: [number, number][] = [];
+    for (const m of html.matchAll(PROTECT_RE)) {
+      const isClose = m[0][1] === '\x2f', tagName = m[1].toLowerCase();
+      if (isClose) {
+        if (stack.length > 0 && stack[stack.length - 1].tag === tagName) {
+          const open = stack.pop()!;
+          if (stack.length === 0) rawRanges.push([open.start, m.index! + m[0].length]);
+        }
+      } else stack.push({ tag: tagName, start: m.index! });
+    }
+    const skipRanges: [number, number][] = [];
+    for (const r of rawRanges.sort((a, b) => a[0] - b[0])) {
+      if (skipRanges.length > 0 && r[0] < skipRanges[skipRanges.length - 1][1])
+        skipRanges[skipRanges.length - 1][1] = Math.max(skipRanges[skipRanges.length - 1][1], r[1]);
+      else skipRanges.push(r);
+    }
+    const segs: Seg[] = [];
+    let i = 0, textStart = -1, skipIdx = 0;
+    while (i < html.length) {
+      if (skipIdx < skipRanges.length && i === skipRanges[skipIdx][0]) {
+        if (textStart >= 0) { segs.push({ tag: false, raw: html.slice(textStart, i) }); textStart = -1; }
+        segs.push({ tag: true, raw: html.slice(skipRanges[skipIdx][0], skipRanges[skipIdx][1]) });
+        i = skipRanges[skipIdx][1]; skipIdx++; continue;
+      }
+      if (html[i] === '<') {
+        if (textStart >= 0) { segs.push({ tag: false, raw: html.slice(textStart, i) }); textStart = -1; }
+        const tagEnd = html.indexOf('>', i);
+        if (tagEnd === -1) { textStart = i + 1; break; }
+        segs.push({ tag: true, raw: html.slice(i, tagEnd + 1) });
+        i = tagEnd + 1; continue;
+      }
+      if (textStart < 0) textStart = i;
+      i++;
+    }
+    if (textStart >= 0) segs.push({ tag: false, raw: html.slice(textStart) });
+    return segs;
+  };
+  const joinSegs = (segs: Seg[]): string => segs.map(s => (s.tag ? s.raw : s.trans ?? s.raw)).join('');
+  const dec = (s: string) => s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+  const enc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  // ---- 1. 读 HTML, 提取原标题 和 article-content ----
+  let html = fs.readFileSync(p, 'utf-8');
+  const origTitle = (html.match(/<h1 class="article-title">([\s\S]*?)<\/h1>/) || [])[1] || '';
+  const cm = /(<div class="article-content">)([\s\S]*?)(<\/div>\s*(?:<div class="article-footer"|<div class="share-overlay"))/.exec(html);
+  if (!cm) { console.log(`[async-translate] ${htmlFileName} no content div`); return; }
+
+  const contentOpen = cm[1];
+  const innerOrig = cm[2];
+  const contentClose = cm[3];
+  const innerStart = cm.index + contentOpen.length;
+
+  // ---- 2. tag-split: 翻译纯文本段 ----
+  const segs = segHtml(innerOrig);
+  const textItems: { text: string; seg: TextSeg }[] = [];
+  for (const s of segs) {
+    if (!s.tag) {
+      const t = dec(s.raw).trim();
+      if (t && isNonChinese(t)) textItems.push({ text: t, seg: s as TextSeg });
+    }
+  }
+
+  if (textItems.length > 0) {
+    // 编号分批翻译(每次 ≤2500 字符)
+    for (let off = 0; off < textItems.length; ) {
+      const batch: typeof textItems = [];
+      let batchLen = 0;
+      while (off < textItems.length && batchLen + textItems[off].text.length <= 2500) {
+        batch.push(textItems[off]);
+        batchLen += textItems[off].text.length;
+        off++;
+      }
+      const numbered = batch.map((item, i) => `【${i}】${item.text}`).join('\n\n');
+      // 解析编号译文并回填;返回有实际变化的文段数(0 = LLM 失败或输出格式漂移)
+      const parseAndApply = (raw: string): number => {
+        const parts = raw.split(/【(\d+)】/);
+        const translated = new Map<number, string>();
+        for (let i = 1; i + 1 < parts.length; i += 2) {
+          const idx = parseInt(parts[i], 10);
+          if (!isNaN(idx)) translated.set(idx, parts[i + 1].trim());
+        }
+        let changed = 0;
+        for (let i = 0; i < batch.length; i++) {
+          const tr = translated.get(i);
+          if (tr && dec(tr) !== batch[i].text) { batch[i].seg.trans = enc(tr); changed++; }
+        }
+        return changed;
+      };
+
+      const out = await translateMarkdown(numbered).catch((e: unknown) => {
+        console.error(`[async-translate] batch fail: ${e instanceof Error ? e.message : e}`);
+        return null;
+      });
+      let changed = out?.translated ? parseAndApply(out.text) : 0;
+      // 返回了却没解析出有效译文(编号漂移/LLM 复读原文)→ 重试一次
+      if (changed === 0) {
+        console.log(`[async-translate] ${htmlFileName} batch produced no change, retry once`);
+        await new Promise(r => setTimeout(r, 600));
+        const retry = await translateMarkdown(numbered).catch((e: unknown) => {
+          console.error(`[async-translate] batch retry fail: ${e instanceof Error ? e.message : e}`);
+          return null;
+        });
+        if (retry?.translated) parseAndApply(retry.text);
+      }
+      await new Promise(r => setTimeout(r, 200));
+    }
+  }
+
+  // ---- 3. 拼回 HTML ----
+  const newInner = joinSegs(segs);
+  html = html.substring(0, innerStart) + newInner + html.substring(innerStart + innerOrig.length);
+
+  // ---- 4. 更新标题(单独翻译原标题,不用正文第一行) ----
+  const stripTags = (s: string) => s.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  let newTitle = '';
+  if (origTitle && isNonChinese(stripTags(origTitle))) {
+    try {
+      const titleTrans = await translateMarkdown(stripTags(origTitle));
+      if (titleTrans?.translated) {
+        newTitle = titleTrans.text.split('\n')[0].substring(0, 80);
+      }
+    } catch (e) {
+      console.error(`[async-translate] title translate failed: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+  if (!newTitle) newTitle = origTitle.substring(0, 80);
+
+  if (newTitle) {
+    const ht = enc(newTitle);
+    html = html.replace(/<h1 class="article-title">[\s\S]*?<\/h1>/, `<h1 class="article-title">${ht}</h1>`);
+    html = html.replace(/<title>[\s\S]*?<\/title>/, `<title>${ht}</title>`);
+    html = html.replace(/var title = "[^"]*";/, `var title = "${ht.replace(/"/g, '\\"')}";`);
+  }
+
+  fs.writeFileSync(p, html, 'utf-8');
+
+  // ---- 5. 更新 meta ----
+  const meta = loadMeta();
+  const entry = meta.find(m => m.fileName === htmlFileName);
+  if (entry && newTitle) {
+    entry.title = newTitle;
+    entry.contentKey = stripTags(newInner).substring(0, 200);
+    saveMeta(meta);
+  }
+
+  await rebuildIndex();
+
+  // 翻译后回写搜索索引:标题/正文已是中文,旧 FTS 仍是翻译前的外文,导致中文搜不到
+  try {
+    const bodyText = normalizeScrapedText(stripTags(newInner));
+    insertSearchArticle({
+      fileName: htmlFileName,
+      title: newTitle || origTitle,
+      author: entry?.author || '',
+      authorHandle: entry?.authorHandle || '',
+      body: bodyText,
+    });
+  } catch (err) {
+    console.error('[async-translate] search re-index failed:', err instanceof Error ? err.message : err);
+  }
+
+  // ---- 6. 自动发现新术语,补充到术语表 ----
+  try {
+    const origMdPath = p.replace(/\.html$/, '.orig.md');
+    if (fs.existsSync(origMdPath)) {
+      const origText = fs.readFileSync(origMdPath, 'utf-8');
+      // 匹配大写开头的多词短语(2-4 个词,每词首字母大写),如 "Agent Harness Engineering"
+      // 过滤:开头的 The/A/An/This/That/These/Those 跳过;截断词(末尾小写)跳过
+      const termRegex = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\b/g;
+      const skipStart = new Set(['The','A','An','This','That','These','Those','Each','Every','All','Some','Many','Most','Few']);
+      const found = new Set<string>();
+      for (const m of origText.matchAll(termRegex)) {
+        const t = m[1].trim();
+        // 过滤泛词开头、截断片段(末尾非完整大写首字母词)、纯数字
+        if (/^\d/.test(t)) continue;
+        if (skipStart.has(t.split(/\s+/)[0])) continue;
+        // 检查是否是截断片段(最后一个词长度 < 3 或包含小写字母以外的非字母字符)
+        const words = t.split(/\s+/);
+        const last = words[words.length - 1];
+        if (last.length < 3 || /[a-z]{2}/.test(last) || /[^A-Za-z]/.test(last)) continue;
+        found.add(t);
+      }
+      if (found.size > 0) {
+        const glossaryPath = path.join(process.cwd(), 'data', 'glossary.json');
+        let glossary: { terms: { source: string; target: string; keepOriginal?: boolean }[] } = { terms: [] };
+        try { glossary = JSON.parse(fs.readFileSync(glossaryPath, 'utf-8')); } catch { /* start fresh */ }
+        const existingSources = new Set(glossary.terms.map(t => t.source.toLowerCase()));
+        const added: string[] = [];
+        for (const term of found) {
+          if (!existingSources.has(term.toLowerCase())) {
+            glossary.terms.push({ source: term, target: term, keepOriginal: true });
+            existingSources.add(term.toLowerCase());
+            added.push(term);
+          }
+        }
+        if (added.length > 0) {
+          fs.writeFileSync(glossaryPath, JSON.stringify(glossary, null, 2) + '\n');
+          console.log(`[async-translate] glossary +${added.length}: ${added.join(', ')}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[async-translate] glossary update failed: ${err instanceof Error ? err.message : err}`);
+  }
+
+  console.log(`[async-translate] ${htmlFileName} → zh`);
+}
+
+/** 判定文章正文是否仍为外文(未翻译)——供补偿扫描探测 */
+export function isArticleUntranslated(html: string): boolean {
+  const m = /<div class="article-content">([\s\S]*?)<\/div>\s*(?:<div class="article-footer"|<div class="share-overlay")/.exec(html);
+  if (!m) return false;
+  const text = m[1]
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ').trim();
+  if (text.length < 20) return false;
+  return isNonChinese(text);
+}
+
+/**
+ * 翻译补偿扫描:兜底异步翻译失败导致的漏翻。
+ * 遍历有 .orig.md 备份(原为外文)但正文仍为外文的文章,逐个调 translateArticleContent 补翻。
+ * 启动延迟 + 定时调用;并发受限,单篇失败不影响其他文章。
+ */
+export async function scanUntranslatedArticles(): Promise<{ scanned: number; translated: number }> {
+  let llmEnabled = false;
+  try { llmEnabled = require('./llm').isLlmEnabled(); } catch { /* keep false */ }
+  if (!llmEnabled) return { scanned: 0, translated: 0 };
+
+  const files = fs.readdirSync(ARTICLES_DIR).filter(f => f.endsWith('.html'));
+  const candidates: string[] = [];
+  for (const f of files) {
+    const origPath = path.join(ARTICLES_DIR, f.replace(/\.html$/, '.orig.md'));
+    if (!fs.existsSync(origPath)) continue; // 无 .orig.md = 原本非外文,跳过
+    try {
+      const html = fs.readFileSync(path.join(ARTICLES_DIR, f), 'utf-8');
+      if (isArticleUntranslated(html)) candidates.push(f);
+    } catch { /* skip unreadable */ }
+  }
+  if (candidates.length === 0) return { scanned: 0, translated: 0 };
+  console.log(`[comp-scan] ${candidates.length} untranslated article(s), translating…`);
+
+  let translated = 0;
+  const CONCURRENCY = 3;
+  for (let i = 0; i < candidates.length; i += CONCURRENCY) {
+    const slice = candidates.slice(i, i + CONCURRENCY);
+    await Promise.all(slice.map(async (f) => {
+      try {
+        await translateArticleContent(f);
+        const html = fs.readFileSync(path.join(ARTICLES_DIR, f), 'utf-8');
+        if (isArticleUntranslated(html)) {
+          console.log(`[comp-scan] no change: ${f}`);
+        } else {
+          translated++;
+          console.log(`[comp-scan] translated: ${f}`);
+        }
+      } catch (err) {
+        console.error(`[comp-scan] FAIL ${f}:`, err instanceof Error ? err.message : err);
+      }
+    }));
+    // 每批之间留喘息,避免 LLM 限流
+    await new Promise(r => setTimeout(r, 500));
+  }
+  return { scanned: candidates.length, translated };
 }

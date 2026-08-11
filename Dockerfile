@@ -12,6 +12,7 @@ ARG CACHEBUST=0
 COPY src ./src
 COPY scripts ./scripts
 COPY public ./public
+COPY prompts ./prompts
 RUN mkdir -p data/public data/articles data/images data/videos data/avatars
 RUN npm run build
 

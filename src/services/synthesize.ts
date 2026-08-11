@@ -82,6 +82,32 @@ function compactHistory(history: ChatMessage[] | undefined): ChatMessage[] {
   }));
 }
 
+/**
+ * 追问检索改写:追问常含指代词(这/那/它),直接用原句检索必空。
+ * 检索前先借历史改写成独立问题(仅用于检索;最终回答仍用原问题+历史)。
+ */
+async function rewriteQueryForRetrieval(question: string, history: ChatMessage[] | undefined): Promise<string> {
+  const hist = compactHistory(history);
+  if (hist.length === 0) return question;
+  const looksLikeFollowUp = question.length <= 30 || /[这那它]|上面|前面|继续|再说|详细/.test(question);
+  if (!looksLikeFollowUp) return question;
+  try {
+    const histText = hist.map(m => `${m.role === 'user' ? '用户' : '助手'}: ${m.content}`).join('\n');
+    const rewritten = await chat([
+      { role: 'system', content: '把用户的追问改写成可独立检索的完整问题。只输出改写后的问题本身,不要解释,不要引号,保持原语言。' },
+      { role: 'user', content: `对话历史:\n${histText}\n\n最新问题: ${question}\n\n改写为独立问题:` },
+    ], { temperature: 0, maxTokens: 120 });
+    const q = (rewritten || '').trim().replace(/^["「『]|["」』]$/g, '');
+    if (q.length >= 4) {
+      console.error('[synthesize] query rewritten:', question.slice(0, 30), '→', q.slice(0, 60));
+      return q;
+    }
+  } catch (err) {
+    console.error('[synthesize] rewrite failed, use original:', err instanceof Error ? err.message : err);
+  }
+  return question;
+}
+
 function buildRagPrompt(
   question: string,
   contexts: Map<string, { text: string; opinions: Opinion[] }>,
@@ -138,8 +164,9 @@ export async function answerQuestion(
     throw new Error('LLM not configured. Set LLM_API_KEY to enable Q&A.');
   }
 
-  // 1. Determine articles to use
-  const topArticles = await retrieveTopArticles(question, options.contextArticle);
+  // 1. Determine articles to use (追问先用历史改写检索 query)
+  const retrievalQuery = await rewriteQueryForRetrieval(question, options.history);
+  const topArticles = await retrieveTopArticles(retrievalQuery, options.contextArticle);
 
   // 2. Get article contexts + opinions
   const contextMap = await getArticleContext(topArticles);
@@ -233,8 +260,9 @@ export async function* answerQuestionStream(
     return;
   }
 
-  // 1. Determine articles
-  const topArticles = await retrieveTopArticles(question, options.contextArticle);
+  // 1. Determine articles (追问先用历史改写检索 query)
+  const retrievalQuery = await rewriteQueryForRetrieval(question, options.history);
+  const topArticles = await retrieveTopArticles(retrievalQuery, options.contextArticle);
 
   // 2. Load contexts
   const contextMap = await getArticleContext(topArticles);

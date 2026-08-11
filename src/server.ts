@@ -4,7 +4,7 @@ import path from 'path';
 import { rateLimit } from 'express-rate-limit';
 import { parseTweetUrl } from './utils/url';
 import { fetchTweet, fetchWechatArticle, fetchWebPage, fetchBookmarks, fetchLikes } from './services/fetcher';
-import { saveTweet, isTweetChanged, togglePin, markRead, markUnread, deleteArticle, getPublicDir, getArticlesDir, getImagesDir, getVideosDir, getAvatarsDir, loadMeta, loadBlockedUrls } from './services/renderer';
+import { saveTweet, isTweetChanged, togglePin, markRead, markUnread, deleteArticle, getPublicDir, getArticlesDir, getImagesDir, getVideosDir, getAvatarsDir, loadMeta, loadBlockedUrls, translateArticleContent } from './services/renderer';
 import { searchArticles } from './services/search';
 import { extractOpinions, extractAllOpinions, getOpinionsByArticle, linkOpinions } from './services/opinions';
 import { answerQuestion, answerQuestionStream, generateSuggestedQuestions, getOrGenerateSuggestions, useSuggestion } from './services/synthesize';
@@ -52,6 +52,20 @@ export function createServer(): express.Express {
   // Health check
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', time: new Date().toISOString() });
+  });
+
+  // 首页分页:加载更多(skip hidden,置顶在前,savedTimestamp 降序,与首页默认一致)
+  app.get('/api/articles', (req, res) => {
+    const offset = Math.max(0, parseInt(String(req.query.offset || '0'), 10) || 0);
+    const limit = Math.min(Math.max(1, parseInt(String(req.query.limit || '60'), 10) || 60), 200);
+    try {
+      const { getVisibleArticlesPage } = require('./services/renderer');
+      const page = getVisibleArticlesPage(offset, limit);
+      res.json({ success: true, items: page.items, total: page.total });
+    } catch (err) {
+      console.error('[api/articles] Error:', err);
+      res.status(500).json({ success: false, error: 'Failed to load articles' });
+    }
   });
 
   app.get('/api/search/keywords', (_req, res) => {
@@ -158,6 +172,9 @@ export function createServer(): express.Express {
             text: article.text.substring(0, 100) + (article.text.length > 100 ? '...' : ''),
           },
         });
+        // 异步翻译(不阻塞响应)
+        translateArticleContent(fileName).catch(err =>
+          console.error(`[async-translate] ${fileName}:`, err instanceof Error ? err.message : err));
         return;
       } catch (err) {
         console.error('[archive] Web page fetch error:', err);
@@ -190,6 +207,9 @@ export function createServer(): express.Express {
           text: tweet.text.substring(0, 100) + (tweet.text.length > 100 ? '...' : ''),
         },
       });
+      // 异步翻译(不阻塞响应)
+      translateArticleContent(fileName).catch(err =>
+        console.error(`[async-translate] ${fileName}:`, err instanceof Error ? err.message : err));
     } catch (err) {
       console.error('[archive] Error:', err);
       const message = err instanceof Error ? err.message : 'Unknown error';
@@ -241,8 +261,8 @@ export function createServer(): express.Express {
       const blockedUrls = loadBlockedUrls();
       const knownUrls = new Set(meta.map(m => m.tweetUrl || ''));
       const [bookmarkUrls, likeUrls] = await Promise.all([
-        fetchBookmarks(5),
-        fetchLikes(5),
+        fetchBookmarks(20),
+        fetchLikes(10),
       ]);
       const allUrls = [...new Set([...bookmarkUrls, ...likeUrls])].filter(u => !blockedUrls.has(u));
       let added = 0;
@@ -254,7 +274,10 @@ export function createServer(): express.Express {
         try {
           if (!isTweetChanged(parsed.tweetId, { id: parsed.tweetId, text: '' } as any)) continue;
           const tweet = await fetchTweet(parsed);
-          await saveTweet(tweet);
+          const fileName = await saveTweet(tweet);
+          // 异步翻译(不阻塞响应)
+          translateArticleContent(fileName).catch(err =>
+            console.error(`[async-translate] ${fileName}:`, err instanceof Error ? err.message : err));
           added++;
           knownUrls.add(url);
         } catch (err) {
@@ -280,8 +303,8 @@ export function createServer(): express.Express {
       const knownUrls = new Set(meta.map(m => m.tweetUrl || ''));
       // Merge bookmarks + likes, dedup, skip blocked
       const [bookmarkUrls, likeUrls] = await Promise.all([
-        fetchBookmarks(5),
-        fetchLikes(5),
+        fetchBookmarks(20),
+        fetchLikes(10),
       ]);
       const allUrls = [...new Set([...bookmarkUrls, ...likeUrls])].filter(u => !blockedUrls.has(u));
       for (const url of allUrls) {
@@ -291,7 +314,10 @@ export function createServer(): express.Express {
         try {
           if (!isTweetChanged(parsed.tweetId, { id: parsed.tweetId, text: '' } as any)) continue;
           const tweet = await fetchTweet(parsed);
-          await saveTweet(tweet);
+          const fileName = await saveTweet(tweet);
+          // 异步翻译(不阻塞响应)
+          translateArticleContent(fileName).catch(err =>
+            console.error(`[async-translate] ${fileName}:`, err instanceof Error ? err.message : err));
           console.log(`[sync] Auto-archived: ${url}`);
           knownUrls.add(url);
         } catch { /* skip failed individual archives */ }
@@ -302,6 +328,26 @@ export function createServer(): express.Express {
 
   syncTimer = setInterval(syncLoop, 5 * 60 * 1000);
   setTimeout(syncLoop, 15000);
+
+  // 翻译补偿扫描:兜底异步翻译失败导致的漏翻(启动延迟 60s + 每 30 分钟)
+  // 有 .orig.md 但正文仍外文的文章会被自动补翻,不依赖保存时的 fire-and-forget 成功
+  let translateScanTimer: ReturnType<typeof setInterval> | null = null;
+  let translateScanning = false;
+  async function translateCompensationScan() {
+    if (translateScanning) return;
+    translateScanning = true;
+    try {
+      const { scanUntranslatedArticles } = require('./services/renderer');
+      const res = await scanUntranslatedArticles();
+      if (res.scanned > 0) console.log(`[comp-scan] done: scanned ${res.scanned}, translated ${res.translated}`);
+    } catch (err) {
+      console.error('[comp-scan] scan error:', err instanceof Error ? err.message : err);
+    } finally {
+      translateScanning = false;
+    }
+  }
+  translateScanTimer = setInterval(translateCompensationScan, 30 * 60 * 1000);
+  setTimeout(translateCompensationScan, 60 * 1000);
 
   // ---- Opinion extraction ----
 
