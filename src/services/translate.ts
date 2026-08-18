@@ -78,6 +78,17 @@ async function llm(system: string, user: string, maxTokens: number): Promise<str
   ], { temperature: 0.2, maxTokens, preferPro: true });
 }
 
+/** LLM 拒绝/道歉输出检测(如"抱歉,我无法访问该链接的内容")。
+ *  输入含裸链接时 LLM 会误以为要它访问链接而道歉;此前道歉文本被当成译文写回,
+ *  污染正文和标题(2026-08 四篇文章事故)。检出即视为该步失败,回退上一稿/原文。
+ *  只查开头 300 字符——道歉总出现在第一句,正文合法内容可能恰好含这些词。 */
+const REFUSAL_RE = /抱歉.{0,12}无法|无法访问.{0,8}链接|无法(为您|帮你)?翻译|请[将把].{0,16}粘贴|I(?:'m| am) (?:sorry|unable)|I can(?:not|'t) (?:access|open|read|view)|unable to access/i;
+
+export function looksLikeRefusal(s: string): boolean {
+  // 只查开头 150 字符:道歉总在第一句,窗口放宽会误伤正文里合法提及"无法访问"的译文
+  return REFUSAL_RE.test(s.trim().substring(0, 150));
+}
+
 /** 单批文本的多遍翻译:分析(长文)→初翻→评审→精修;任一步失败回退上一稿 */
 export async function translateWithPasses(text: string, opts?: { noStripMarker?: boolean }): Promise<string> {
   // 输入无编号时,输出可能自发带上【1】标记——统一剥掉,防止泄漏进标题/正文
@@ -110,6 +121,10 @@ export async function translateWithPasses(text: string, opts?: { noStripMarker?:
     console.error('[translate] draft pass failed, keep original:', err instanceof Error ? err.message : err);
     return text;
   }
+  if (looksLikeRefusal(draft)) {
+    console.error('[translate] draft pass returned refusal/apology, keep original');
+    return text;
+  }
 
   // 评审(只诊断)
   let critique: string;
@@ -123,7 +138,12 @@ export async function translateWithPasses(text: string, opts?: { noStripMarker?:
 
   // 精修
   try {
-    return stripMarker(await llm(loadPrompt('revise.md'), `【原文】\n${text}\n\n【初翻】\n${draft}\n\n【评审意见】\n${critique}`, 4096));
+    const revised = await llm(loadPrompt('revise.md'), `【原文】\n${text}\n\n【初翻】\n${draft}\n\n【评审意见】\n${critique}`, 4096);
+    if (looksLikeRefusal(revised)) {
+      console.error('[translate] revise pass returned refusal/apology, use draft');
+      return stripMarker(draft);
+    }
+    return stripMarker(revised);
   } catch (err) {
     console.error('[translate] revise pass failed, use draft:', err instanceof Error ? err.message : err);
     return stripMarker(draft);

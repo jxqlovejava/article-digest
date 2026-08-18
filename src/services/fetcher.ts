@@ -341,7 +341,10 @@ async function expandQuoteOrRetweet(tweet: any, depth = 0): Promise<any> {
 
     // If the quote carries little or no text (often just a t.co card URL),
     // fetch the original tweet/article so we can include its real content.
-    if (!q.text || q.text.trim().length <= 30) {
+    // Bare-URL text (e.g. https://x.com/i/article/...) also counts as "no content":
+    // FxTwitter hands X Article quotes back this way (43 chars, bypasses the ≤30 check).
+    const qBareUrl = /^https?:\/\/\S+$/.test(q.text?.trim() || '');
+    if (!q.text || q.text.trim().length <= 30 || qBareUrl) {
       try {
         const parsed = parseTweetUrl(q.url);
         if (parsed) {
@@ -353,9 +356,11 @@ async function expandQuoteOrRetweet(tweet: any, depth = 0): Promise<any> {
       }
     }
 
-    // Still empty? It may be a link-card / X Article whose body FxTwitter does not expose.
-    // Check both t.co (link-card) and article presence (X Article without t.co).
-    if (!q.text?.trim() && (q.raw_text?.text?.includes('t.co') || q.article)) {
+    // Still no content (empty or bare URL)? It may be a link-card / X Article whose
+    // body FxTwitter does not expose. Check t.co (link-card), article presence,
+    // and i/article URL carried in the text itself. Re-evaluate after the refetch above.
+    const qNoContent = !q.text?.trim() || /^https?:\/\/\S+$/.test(q.text.trim());
+    if (qNoContent && (q.raw_text?.text?.includes('t.co') || q.article || /(?:x|twitter)\.com\/i\/article\//.test(q.text || ''))) {
       const resolved = await resolveLinkCard(q);
       if (resolved) {
         q = {
@@ -1164,7 +1169,11 @@ async function fetchFromFxTwitter(parsed: ParsedTweetUrl): Promise<FetchedTweet>
   const textIsShort = !text || text.trim().length <= 30;
   const hasTcoUrl = tweet.raw_text?.text?.includes('t.co');
   const articleHadNoContent = textIsShort && !!tweet.article;  // article field present but content empty
-  if (textIsShort && (hasTcoUrl || articleHadNoContent)) {
+  // FxTwitter 对部分 X Article 发布推不返回 article 字段,预览/raw_text 里的
+  // i/article 链接是唯一信号——命中也走 GraphQL 补全,而非把预览当正文存档
+  const hasArticleUrl = /(?:x|twitter)\.com\/i\/article\/\d+/.test(text || '') ||
+                        /(?:x|twitter)\.com\/i\/article\/\d+/.test(tweet.raw_text?.text || '');
+  if ((textIsShort && (hasTcoUrl || articleHadNoContent)) || (hasArticleUrl && !tweet.article)) {
     const gqlArticle = await fetchArticleViaGraphQL(tweet.id);
     const gqlText = gqlArticle?.text?.trim() || '';
     const gqlTextIsLong = gqlText.length > 100;
